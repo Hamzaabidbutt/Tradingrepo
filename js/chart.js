@@ -78,13 +78,107 @@
     }
   }
 
+  // ----- custom primitive: fibonacci lines + golden pocket band -----
+  class FibPrimitive {
+    constructor() {
+      this.fib = null;
+      this._chart = null;
+      this._series = null;
+      this._requestUpdate = null;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return { draw(target) { target.useBitmapCoordinateSpace((scope) => self._draw(scope)); } };
+        },
+        zOrder() { return 'bottom'; },
+      };
+    }
+
+    attached({ chart, series, requestUpdate }) {
+      this._chart = chart; this._series = series; this._requestUpdate = requestUpdate;
+    }
+    detached() { this._chart = null; this._series = null; }
+    paneViews() { return [this._paneView]; }
+    setFib(fib) { this.fib = fib; if (this._requestUpdate) this._requestUpdate(); }
+
+    _draw(scope) {
+      if (!this._chart || !this._series || !this.fib) return;
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const ts = this._chart.timeScale();
+      const range = ts.getVisibleRange();
+      if (!range) return;
+      const f = this.fib;
+      let x1 = ts.timeToCoordinate(f.startTime);
+      if (x1 === null) x1 = f.startTime < range.from ? 0 : null;
+      if (x1 === null) return;
+      const bx = Math.round(x1 * hr);
+      const rightEdge = scope.bitmapSize.width;
+      ctx.save();
+      // golden pocket band
+      const gTop = this._series.priceToCoordinate(f.golden.top);
+      const gBot = this._series.priceToCoordinate(f.golden.bottom);
+      if (gTop !== null && gBot !== null) {
+        ctx.fillStyle = C.fibGold;
+        ctx.fillRect(bx, Math.round(gTop * vr), rightEdge - bx, Math.max(1, Math.round((gBot - gTop) * vr)));
+      }
+      ctx.font = `${Math.round(9.5 * vr)}px 'Inter', sans-serif`;
+      for (const lv of f.levels) {
+        const y = this._series.priceToCoordinate(lv.price);
+        if (y === null) continue;
+        const by = Math.round(y * vr);
+        ctx.strokeStyle = C.fibLine;
+        ctx.lineWidth = Math.max(1, Math.round(hr * (lv.ext ? 0.5 : 1)));
+        ctx.setLineDash(lv.ext ? [6 * hr, 5 * hr] : [2 * hr, 3 * hr]);
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.lineTo(rightEdge, by);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = C.fibLabel;
+        ctx.fillText(`Fib ${lv.label}`, bx + 4 * hr, by - 3 * vr);
+      }
+      ctx.restore();
+    }
+  }
+
+  // ----- custom primitive: a name label written on the pane (top-left) -----
+  class PaneLabelPrimitive {
+    constructor(text) {
+      this.text = text;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return {
+            draw(target) {
+              target.useBitmapCoordinateSpace((scope) => {
+                const ctx = scope.context;
+                const vr = scope.verticalPixelRatio;
+                const hr = scope.horizontalPixelRatio;
+                ctx.save();
+                ctx.font = `600 ${Math.round(10 * vr)}px 'Inter', sans-serif`;
+                ctx.fillStyle = 'rgba(139,147,167,0.9)';
+                ctx.fillText(self.text, 8 * hr, 14 * vr);
+                ctx.restore();
+              });
+            },
+          };
+        },
+        zOrder() { return 'top'; },
+      };
+    }
+    setText(t) { this.text = t; }
+    paneViews() { return [this._paneView]; }
+  }
+
   class Dashboard {
     constructor(container, pricePrecision) {
       this.container = container;
       this.pricePrecision = pricePrecision;
       this.priceLines = [];
       this.poolLines = [];
-      this.layers = { zones: true, markers: true, liquidity: true, levels: true };
+      this.layers = { zones: true, markers: true, liquidity: true, levels: true, fib: true };
       this._lastAnalysis = null;
       this._lastSignal = null;
       this._build();
@@ -127,6 +221,10 @@
       }, 0);
       this.zonesPrimitive = new ZonesPrimitive();
       this.candles.attachPrimitive(this.zonesPrimitive);
+      this.fibPrimitive = new FibPrimitive();
+      this.candles.attachPrimitive(this.fibPrimitive);
+      this.priceLabel = new PaneLabelPrimitive('PRICE · Smart-money structures (OB · FVG · liquidity · fib)');
+      this.candles.attachPrimitive(this.priceLabel);
       this.markers = LWC.createSeriesMarkers(this.candles, []);
 
       // pane 1: volume
@@ -136,6 +234,7 @@
         lastValueVisible: false,
         priceLineVisible: false,
       }, 1);
+      this.volume.attachPrimitive(new PaneLabelPrimitive('VOLUME'));
 
       // pane 2: delta histogram + CVD line
       this.delta = this.chart.addSeries(LWC.HistogramSeries, {
@@ -145,6 +244,7 @@
         lastValueVisible: false,
         priceLineVisible: false,
       }, 2);
+      this.delta.attachPrimitive(new PaneLabelPrimitive('DELTA VOLUME (buy − sell) + CVD line'));
       this.cvd = this.chart.addSeries(LWC.LineSeries, {
         color: C.cvd,
         lineWidth: 2,
@@ -163,11 +263,35 @@
         lastValueVisible: false,
         priceLineVisible: false,
       }, 3);
+      this.liqSeries.attachPrimitive(new PaneLabelPrimitive('LIQUIDATIONS · shorts ↑ blue / longs ↓ amber'));
 
       const panes = this.chart.panes();
       if (panes[1]) panes[1].setHeight(80);
       if (panes[2]) panes[2].setHeight(110);
       if (panes[3]) panes[3].setHeight(80);
+
+      // crosshair OHLC / volume / delta readout
+      this.legendEl = document.getElementById('ohlcLegend');
+      this.chart.subscribeCrosshairMove((param) => this._renderLegend(param));
+    }
+
+    _renderLegend(param) {
+      if (!this.legendEl) return;
+      const c = param && param.seriesData ? param.seriesData.get(this.candles) : null;
+      if (!c || c.open === undefined) { this.legendEl.classList.add('hidden'); return; }
+      const vol = param.seriesData.get(this.volume);
+      const delta = param.seriesData.get(this.delta);
+      const p = this.pricePrecision;
+      const dirCls = c.close >= c.open ? 'pos' : 'neg';
+      const dVal = delta ? delta.value : 0;
+      this.legendEl.classList.remove('hidden');
+      this.legendEl.innerHTML =
+        `<span>O <b class="${dirCls}">${c.open.toFixed(p)}</b></span>` +
+        `<span>H <b class="${dirCls}">${c.high.toFixed(p)}</b></span>` +
+        `<span>L <b class="${dirCls}">${c.low.toFixed(p)}</b></span>` +
+        `<span>C <b class="${dirCls}">${c.close.toFixed(p)}</b></span>` +
+        (vol ? `<span>Vol <b>${fmtNum(vol.value)}</b></span>` : '') +
+        (delta ? `<span>Δ <b class="${dVal >= 0 ? 'pos' : 'neg'}">${dVal >= 0 ? '+' : ''}${fmtNum(dVal)}</b></span>` : '');
     }
 
     setPricePrecision(p) {
@@ -257,6 +381,7 @@
         }
       }
       this.zonesPrimitive.setZones(zones);
+      this.fibPrimitive.setFib(this.layers.fib && analysis ? analysis.fib : null);
 
       // --- liquidity pool lines ---
       for (const l of this.poolLines) this.candles.removePriceLine(l);
@@ -331,6 +456,13 @@
         mk(L.t2, C.target, 'TARGET 2', LWC.LineStyle.Dotted);
       }
     }
+  }
+
+  function fmtNum(x) {
+    const a = Math.abs(x);
+    if (a >= 1e6) return (x / 1e6).toFixed(2) + 'M';
+    if (a >= 1e3) return (x / 1e3).toFixed(1) + 'K';
+    return x.toFixed(0);
   }
 
   window.Dashboard = Dashboard;

@@ -103,7 +103,16 @@
       });
     }
 
-    // 9. funding extreme (contrarian)
+    // 9. fibonacci golden pocket: pullback into 0.618–0.786 of the latest
+    // impulse favors continuation in the impulse direction
+    if (analysis.fib && price <= analysis.fib.golden.top && price >= analysis.fib.golden.bottom) {
+      factors.push({
+        name: 'Fibonacci', weight: W.fib, dir: analysis.fib.up ? 1 : -1,
+        note: `Price in the golden pocket (0.618–0.786 retracement of the last ${analysis.fib.up ? 'up' : 'down'} move ${fmt(analysis.fib.low)}→${fmt(analysis.fib.high)})`,
+      });
+    }
+
+    // 10. funding extreme (contrarian)
     if (typeof ctx.funding === 'number' && Math.abs(ctx.funding) > 0.0003) {
       factors.push({
         name: 'Funding', weight: W.funding, dir: ctx.funding > 0 ? -1 : 1,

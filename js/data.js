@@ -242,9 +242,11 @@
 
   function intervalSeconds(tf) {
     const n = parseInt(tf, 10);
-    if (tf.endsWith('m')) return n * 60;
-    if (tf.endsWith('h')) return n * 3600;
+    if (tf.endsWith('M')) return n * 2592000; // calendar month, approximated
+    if (tf.endsWith('w')) return n * 604800;
     if (tf.endsWith('d')) return n * 86400;
+    if (tf.endsWith('h')) return n * 3600;
+    if (tf.endsWith('m')) return n * 60;
     return 900;
   }
 

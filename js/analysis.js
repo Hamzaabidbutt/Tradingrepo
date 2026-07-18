@@ -263,6 +263,37 @@
     return divergence;
   }
 
+  // ---------- fibonacci retracement of the latest swing ----------
+  // Anchored to the most recent significant swing pair; retracement levels
+  // plus 1.272 / 1.618 extensions, with the 0.618–0.786 "golden pocket".
+  function computeFib(candles) {
+    const LOOKBACK = 120;
+    const from = Math.max(0, candles.length - LOOKBACK);
+    let hiIdx = from, loIdx = from;
+    for (let i = from; i < candles.length; i++) {
+      if (candles[i].high >= candles[hiIdx].high) hiIdx = i;
+      if (candles[i].low <= candles[loIdx].low) loIdx = i;
+    }
+    const high = candles[hiIdx].high, low = candles[loIdx].low;
+    const range = high - low;
+    if (range <= 0) return null;
+    const up = hiIdx > loIdx; // most recent extreme defines the impulse direction
+    const startIdx = Math.min(hiIdx, loIdx);
+    const ratios = [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1];
+    const levels = ratios.map((r) => ({
+      label: r === 0 ? (up ? '0 (swing high)' : '0 (swing low)') : r === 1 ? '1.0 (swing origin)' : String(r),
+      ratio: r,
+      price: up ? high - r * range : low + r * range,
+    }));
+    for (const r of [1.272, 1.618]) {
+      levels.push({ label: `${r} ext`, ratio: r, ext: true, price: up ? high + (r - 1) * range : low - (r - 1) * range });
+    }
+    const golden = up
+      ? { top: high - 0.618 * range, bottom: high - 0.786 * range }
+      : { top: low + 0.786 * range, bottom: low + 0.618 * range };
+    return { up, high, low, startTime: candles[startIdx].time, levels, golden };
+  }
+
   // ---------- top-level ----------
   function analyze(candles) {
     if (candles.length < 30) return null;
@@ -274,15 +305,16 @@
     const absorption = findAbsorption(candles);
     const cvd = computeCVD(candles);
     const divergence = findDeltaDivergence(candles, pivots, cvd);
+    const fib = computeFib(candles);
     const lastATR = atr(candles, candles.length - 1);
     return {
       pivots, structure, orderBlocks, fvgs, liquidity, absorption, cvd,
-      divergence, atr: lastATR,
+      divergence, fib, atr: lastATR,
       lastVolSMA: volSMA(candles, candles.length - 1),
     };
   }
 
-  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, atr };
+  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, atr };
   if (typeof window !== 'undefined') window.Analysis = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

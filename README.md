@@ -17,7 +17,12 @@ plain language, and produces confluence-based trade signals with entry, stop and
 | **BOS / CHoCH arrows** | Break of Structure (trend continuation) and Change of Character (early reversal). |
 | **ABS markers** | Absorption — heavy aggressive volume that fails to move price (effort vs. result). |
 | **CVD DIV** | Delta divergence — price and cumulative delta disagree, momentum is drying up. |
+| **Fibonacci** (dotted lines) | Auto-drawn retracement of the latest swing (0 → 1 plus 1.272/1.618 extensions) with the 0.618–0.786 **golden pocket** shaded — a pullback into it counts toward the signal. |
 | **ENTRY / STOP / TARGET lines** | The current signal's trade plan, anchored to zones and liquidity pools. |
+
+Every pane is labeled on the chart itself (PRICE, VOLUME, DELTA VOLUME + CVD,
+LIQUIDATIONS), a crosshair readout shows OHLC / volume / delta for the hovered candle,
+and all Binance timeframes are available (1m → 1M).
 
 Sub-panes: **volume**, **delta volume + CVD** (aggressive buys minus sells, per candle and
 cumulative), and **liquidations** (blue up = shorts liquidated, amber down = longs liquidated).

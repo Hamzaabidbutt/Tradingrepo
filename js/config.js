@@ -5,7 +5,7 @@ window.CFG = {
     { id: 'ORDIUSDT', base: 'ORDI', name: 'Ordinals', pricePrecision: 3, sample: 11.5 },
   ],
 
-  TIMEFRAMES: ['5m', '15m', '1h', '4h'],
+  TIMEFRAMES: ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'],
   DEFAULT_TF: '15m',
   HISTORY_LIMIT: 500,
 
@@ -32,6 +32,7 @@ window.CFG = {
     delta: 10,
     liquidation: 10,
     absorption: 10,
+    fib: 8,
     funding: 5,
   },
   SIGNAL_THRESHOLD: 35,       // |score| needed for LONG/SHORT
@@ -52,6 +53,9 @@ window.CFG = {
     fvgBull: 'rgba(59,130,246,0.12)',
     fvgBear: 'rgba(217,119,6,0.12)',
     liquidity: '#8b93a7',
+    fibLine: 'rgba(139,147,167,0.55)',
+    fibGold: 'rgba(217,119,6,0.10)',
+    fibLabel: '#a9b1c4',
     entry: '#3b82f6',
     stop: '#ef5350',
     target: '#26a69a',

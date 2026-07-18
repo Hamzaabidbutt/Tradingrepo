@@ -38,20 +38,15 @@
       <label><input type="checkbox" data-layer="zones" checked> OB / FVG</label>
       <label><input type="checkbox" data-layer="liquidity" checked> Liquidity</label>
       <label><input type="checkbox" data-layer="markers" checked> Markers</label>
+      <label><input type="checkbox" data-layer="fib" checked> Fibonacci</label>
       <label><input type="checkbox" data-layer="levels" checked> Entry/Exit</label>
     </div>
   </div>
 
   <main class="layout">
     <section class="chart-wrap">
+      <div id="ohlcLegend" class="ohlc-legend hidden"></div>
       <div id="chart" class="chart"></div>
-      <div class="pane-legend">
-        <span><i class="sw" style="background:#26a69a"></i>volume/delta buy</span>
-        <span><i class="sw" style="background:#ef5350"></i>volume/delta sell</span>
-        <span><i class="sw" style="background:#d1d4dc"></i>CVD (cumulative delta)</span>
-        <span><i class="sw" style="background:#3b82f6"></i>shorts liquidated ↑</span>
-        <span><i class="sw" style="background:#d97706"></i>longs liquidated ↓</span>
-      </div>
     </section>
 
     <aside class="side">

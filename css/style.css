@@ -151,19 +151,26 @@ body {
   min-height: 0;
 }
 
-.chart-wrap { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+.chart-wrap { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); position: relative; }
 .chart { flex: 1; min-height: 480px; }
 
-.pane-legend {
+.ohlc-legend {
+  position: absolute;
+  top: 24px;
+  left: 8px;
+  z-index: 5;
+  pointer-events: none;
   display: flex;
-  gap: 16px;
-  padding: 6px 14px;
+  gap: 12px;
   font-size: 11px;
   color: var(--ink-muted);
-  border-top: 1px solid var(--border);
-  flex-wrap: wrap;
+  background: rgba(19, 23, 34, 0.78);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-variant-numeric: tabular-nums;
 }
-.sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.ohlc-legend b { font-weight: 600; color: var(--ink); }
 
 /* ---------- side panel ---------- */
 .side {
