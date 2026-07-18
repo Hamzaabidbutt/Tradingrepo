@@ -57,11 +57,42 @@
       state.candles = feed.demoKlines(state.symbol, state.tf, CFG.HISTORY_LIMIT);
     }
     state.liveCandle = null;
+    bigOrders.avg = 0; bigOrders.n = 0; bigOrders.list = [];
     dash.setHistory(state.candles, liqBarsFor(state.symbol));
     feed.setKlineStream(state.symbol, state.tf);
     runAnalysis();
     refreshStats();
+    loadSR(); // multi-timeframe S/R in the background
     setStatus(state.demo ? 'demo' : 'live', state.demo ? 'DEMO DATA' : 'LIVE');
+  }
+
+  // ---- multi-timeframe support / resistance ----
+  async function loadSR() {
+    const sym = state.symbol;
+    const jobs = CFG.SR_TIMEFRAMES.map(async ([tf, label]) => {
+      try {
+        const cs = state.demo
+          ? feed.demoKlines(sym, tf, tf === '1M' ? 120 : 250)
+          : await feed.fetchKlines(sym, tf, tf === '1M' ? 120 : 250);
+        return window.Analysis.srLevels(cs, label);
+      } catch (e) { return []; }
+    });
+    const levels = (await Promise.all(jobs)).flat();
+    if (sym !== state.symbol) return; // user switched coins meanwhile
+    state.sr = levels;
+    applySR();
+  }
+
+  function applySR() {
+    if (!state.sr || !state.candles.length) return;
+    const price = state.candles[state.candles.length - 1].close;
+    const near = state.sr
+      .filter((l) => Math.abs(l.price - price) / price < 0.25)
+      .map((l) => ({ ...l, kind: l.price >= price ? 'R' : 'S' }))
+      .sort((a, b) => Math.abs(a.price - price) - Math.abs(b.price - price))
+      .slice(0, 8);
+    dash.setSR(near);
+    state.srNear = near;
   }
 
   // ---------- feed handlers ----------
@@ -76,8 +107,14 @@
       dash.updateCandle(candle);
       runAnalysis();
     } else {
-      if (last && candle.time === last.time) return; // stale
-      state.liveCandle = candle;
+      // Binance's kline history includes the still-forming candle as its
+      // last row, so live updates for that same bucket must REPLACE it —
+      // this is what keeps candles moving without a page refresh.
+      if (last && candle.time === last.time) {
+        state.candles[state.candles.length - 1] = candle;
+      } else {
+        state.liveCandle = candle;
+      }
       dash.updateCandle(candle);
       scheduleLiveAnalysis();
     }
@@ -85,9 +122,24 @@
   }
 
   function onAggTrade(t) {
-    // rolling delta readout in the stats strip for the active symbol
     if (t.symbol !== state.symbol) return;
     rollDelta(t);
+    trackBigOrder(t);
+    updatePriceHeader(t.price); // tick-by-tick price, faster than kline pushes
+  }
+
+  // ---- big orders (whale prints) ----
+  const bigOrders = { avg: 0, n: 0, list: [] };
+  function trackBigOrder(t) {
+    const notional = t.qty * t.price;
+    bigOrders.n++;
+    bigOrders.avg += (notional - bigOrders.avg) / Math.min(bigOrders.n, 500);
+    const threshold = Math.max(state.demo ? 400 : 15000, bigOrders.avg * 25);
+    if (bigOrders.n > 30 && notional >= threshold) {
+      bigOrders.list.push({ side: t.side, notional, price: t.price, time: Date.now() });
+      if (bigOrders.list.length > 6) bigOrders.list.shift();
+      renderKnowledge();
+    }
   }
 
   const deltaWindow = [];
@@ -168,16 +220,106 @@
     dash.applyAnalysis(analysisResult, signal);
     renderSignalCard();
     renderTrendBadge();
+    renderKnowledge();
+    applySR();
     reasoning.fromAnalysis(state.symbol, state.tf, state.candles, analysisResult);
+  }
+
+  // ---- market knowledge panel ----
+  function renderKnowledge() {
+    const el = $('#knowledge');
+    if (!el || !analysisResult) return;
+    const a = analysisResult;
+    const S = window.Signals;
+    const candles = state.candles;
+    const lastIdx = candles.length - 1;
+    const last = candles[lastIdx];
+    const p = symMeta().pricePrecision;
+    const px = (v) => (typeof v === 'number' ? v.toFixed(p) : v);
+    const sections = [];
+
+    // 1. what's happening
+    const trend = a.structure.trend;
+    const lastEv = a.structure.events[a.structure.events.length - 1];
+    const sweep = a.liquidity.sweeps[a.liquidity.sweeps.length - 1];
+    let story = trend === 'up' ? 'Structure is bullish (higher highs and higher lows).'
+      : trend === 'down' ? 'Structure is bearish (lower highs and lower lows).'
+      : 'Price is ranging with no clear structure.';
+    if (lastEv && lastIdx - lastEv.idx <= 10) {
+      story += ` Most recent event: ${lastEv.kind} ${lastEv.dir} through ${px(lastEv.level)}${lastEv.kind === 'CHoCH' ? ' — an early reversal warning' : ' — trend confirmation'}.`;
+    }
+    if (sweep && lastIdx - sweep.idx <= 8) {
+      story += ` A liquidity hunt just ran stops ${sweep.dir === 'low' ? 'below' : 'above'} ${px(sweep.level)}.`;
+    }
+    sections.push(['What’s happening', story]);
+
+    // 2. volume: change + why
+    const vAvg = a.lastVolSMA;
+    const recentV = candles.slice(-3).reduce((s, c) => s + c.volume, 0) / 3;
+    const ratio = vAvg ? recentV / vAvg : 1;
+    const recentD = candles.slice(-3).reduce((s, c) => s + c.delta, 0);
+    let volTxt;
+    if (ratio > 1.4) volTxt = `Volume is pumping — ${ratio.toFixed(1)}× its average, dominated by ${recentD >= 0 ? 'aggressive buyers' : 'aggressive sellers'} (3-bar delta ${S.fmtQty(recentD)}).`;
+    else if (ratio < 0.7) volTxt = `Volume is drying up (${ratio.toFixed(1)}× average) — moves here are less reliable, watch for the next injection of volume.`;
+    else volTxt = `Volume is normal (${ratio.toFixed(1)}× average), net flow ${recentD >= 0 ? 'buy' : 'sell'}-side (${S.fmtQty(recentD)}).`;
+    if (ratio > 1.4) {
+      if (sweep && lastIdx - sweep.idx <= 5) volTxt += ' Likely cause: the stop-hunt flush forcing traders out.';
+      else if (lastEv && lastIdx - lastEv.idx <= 5) volTxt += ` Likely cause: breakout participation after the ${lastEv.kind}.`;
+      else volTxt += ' No obvious structural catalyst — possibly news-driven or a large player working an order.';
+    }
+    sections.push(['Volume', volTxt]);
+
+    // 3. phase: accumulation / distribution
+    sections.push(['Phase', `${cap(a.phase.phase)} — ${a.phase.note}.`]);
+
+    // 4. buying / selling areas (volume profile)
+    if (a.profile) {
+      sections.push(['Key areas', `Heaviest BUYING around ${px(a.profile.buyArea)} · heaviest SELLING around ${px(a.profile.sellArea)} · most traded price (POC) ${px(a.profile.poc)}. Expect reactions when price revisits these.`]);
+    }
+
+    // 5. double top / bottom
+    if (a.doublePattern) {
+      const dp = a.doublePattern;
+      sections.push([dp.type === 'double-top' ? 'Double top' : 'Double bottom',
+        `${dp.type === 'double-top' ? 'Double top' : 'Double bottom'} at ${px(dp.level)} (neckline ${px(dp.neckline)}). Estimated ~${dp.breakChance}% chance the level BREAKS: ${dp.reasons.join('; ')}.`]);
+    }
+
+    // 6. nearest S/R with strength
+    if (state.srNear && state.srNear.length) {
+      const res = state.srNear.filter((l) => l.kind === 'R')[0];
+      const sup = state.srNear.filter((l) => l.kind === 'S')[0];
+      const bits = [];
+      if (res) bits.push(`resistance ${px(res.price)} (${res.tf}, ${res.strength}, ${res.touches} touches)`);
+      if (sup) bits.push(`support ${px(sup.price)} (${sup.tf}, ${sup.strength}, ${sup.touches} touches)`);
+      if (bits.length) sections.push(['Nearest S/R', `Closest ${bits.join(' · ')}. Strength = how many times the level has been respected across hourly/daily/weekly/monthly charts.`]);
+    }
+
+    // 7. big orders
+    if (bigOrders.list.length) {
+      const rows = bigOrders.list.slice().reverse().map((o) => {
+        const t = new Date(o.time);
+        return `<div class="ko-row ${o.side}"><span>${o.side === 'buy' ? '🟢 BUY' : '🔴 SELL'}</span><b>${S.fmtUsd(o.notional)}</b><span>@ ${px(o.price)}</span><span class="ko-time">${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}</span></div>`;
+      }).join('');
+      sections.push(['Big orders (whales)', rows, true]);
+    }
+
+    el.innerHTML = sections.map(([title, body, raw]) =>
+      `<div class="k-section"><div class="k-title">${title}</div><div class="k-body">${raw ? body : escapeText(body)}</div></div>`
+    ).join('');
+    void last;
+  }
+
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function escapeText(s) {
+    return String(s).replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
   }
 
   function scheduleLiveAnalysis() {
     if (analyzeTimer) return;
     analyzeTimer = setTimeout(() => {
       analyzeTimer = null;
-      // analyze including the live candle so entries react in real time
-      if (!state.liveCandle) return;
-      const merged = state.candles.concat([state.liveCandle]);
+      // analyze including the live candle so everything reacts in real time
+      const merged = state.liveCandle ? state.candles.concat([state.liveCandle]) : state.candles;
       const a = window.Analysis.analyze(merged);
       if (!a) return;
       analysisResult = a;
@@ -188,7 +330,8 @@
       dash.applyAnalysis(a, signal);
       renderSignalCard();
       renderTrendBadge();
-    }, 2500);
+      renderKnowledge();
+    }, 1200);
   }
 
   function recentLiq() {
@@ -294,6 +437,7 @@
     $('#stat-change').textContent = (st.change24h >= 0 ? '+' : '') + st.change24h.toFixed(2) + '%';
     $('#stat-change').className = 'stat-value ' + (st.change24h >= 0 ? 'pos' : 'neg');
     $('#stat-vol24').textContent = window.Signals.fmtUsd(st.volume24h);
+    if (st.high24h) $('#stat-hl').textContent = `${st.high24h.toFixed(symMeta().pricePrecision)} / ${st.low24h.toFixed(symMeta().pricePrecision)}`;
     updatePriceHeader(st.lastPrice);
   }
 

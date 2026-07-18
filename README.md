@@ -1,6 +1,6 @@
 # 📡 FlowSight — Smart-Money Flow Terminal
 
-Live market-analysis dashboard for **UNIUSDT** and **ORDIUSDT** (Binance USDT-M Futures).
+Live market-analysis dashboard for **UNI, ORDI, BTC, ETH, SOL and BNB** (Binance USDT-M Futures).
 It reads order flow and market structure in real time, explains *why* price is moving in
 plain language, and produces confluence-based trade signals with entry, stop and targets.
 
@@ -20,9 +20,20 @@ plain language, and produces confluence-based trade signals with entry, stop and
 | **Fibonacci** (dotted lines) | Auto-drawn retracement of the latest swing (0 → 1 plus 1.272/1.618 extensions) with the 0.618–0.786 **golden pocket** shaded — a pullback into it counts toward the signal. |
 | **ENTRY / STOP / TARGET lines** | The current signal's trade plan, anchored to zones and liquidity pools. |
 
+| **S/R lines** (dashed, ★-rated) | Multi-timeframe support/resistance from hourly, daily, weekly and monthly charts. Strength (★ → ★★★) = how many times the level has been respected. |
+| **ENGULF markers** | Bullish/bearish engulfing candles ("!" = on heavy volume). |
+| **DBL TOP / DBL BOTTOM line** | Double top/bottom with an estimated % chance the level breaks (volume on the retest, CVD between tests, prevailing trend). |
+| **TOP / BOTTOM tags** | The current swing high and swing low prices on the axis. |
+
 Every pane is labeled on the chart itself (PRICE, VOLUME, DELTA VOLUME + CVD,
 LIQUIDATIONS), a crosshair readout shows OHLC / volume / delta for the hovered candle,
-and all Binance timeframes are available (1m → 1M).
+all Binance timeframes are available (1m → 1M), and the layout is mobile-friendly.
+
+The **Market knowledge** panel narrates the market in plain language and updates live:
+what's happening structurally, volume rising/falling and the likely reason,
+accumulation vs distribution (Wyckoff-style CVD footprint), the heaviest buying and
+selling price areas (volume profile), active double top/bottom with break odds, the
+nearest S/R with strength, and large "whale" market orders as they print.
 
 Sub-panes: **volume**, **delta volume + CVD** (aggressive buys minus sells, per candle and
 cumulative), and **liquidations** (blue up = shorts liquidated, amber down = longs liquidated).

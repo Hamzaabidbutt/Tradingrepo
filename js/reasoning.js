@@ -92,6 +92,22 @@
         }
       }
 
+      for (const e of analysis.engulfing || []) {
+        if (lastIdx - e.idx > horizon) continue;
+        const key = `${symbol}:${tf}:eng:${e.idx}:${e.side}`;
+        this.push(key, 'ENGULF', e.side === 'bullish' ? 'tag-ob' : 'tag-hunt',
+          `${symbol} ${tf}: ${e.side === 'bullish' ? 'Bullish' : 'Bearish'} engulfing candle${e.strong ? ' on heavy volume' : ''} — ${e.side === 'bullish' ? 'buyers fully absorbed the previous red candle, momentum flipping up' : 'sellers fully absorbed the previous green candle, momentum flipping down'}.`,
+          candles[e.idx].time * 1000);
+      }
+
+      if (analysis.doublePattern && lastIdx - analysis.doublePattern.idx2 <= horizon) {
+        const dp = analysis.doublePattern;
+        const key = `${symbol}:${tf}:dbl:${dp.type}:${dp.idx2}`;
+        this.push(key, dp.type === 'double-top' ? 'DBL TOP' : 'DBL BOT', 'tag-choch',
+          `${symbol} ${tf}: ${dp.type === 'double-top' ? 'Double top' : 'Double bottom'} forming at ${formatPrice(dp.level)} — estimated ${dp.breakChance}% chance the level breaks (${dp.reasons.join('; ')}).`,
+          candles[dp.idx2].time * 1000);
+      }
+
       if (analysis.divergence && lastIdx - analysis.divergence.idx <= horizon) {
         const d = analysis.divergence;
         const key = `${symbol}:${tf}:div:${d.idx}:${d.side}`;

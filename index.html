@@ -31,6 +31,7 @@
   <div class="stats-strip">
     <div class="stat"><span class="stat-label">24h change</span><span id="stat-change" class="stat-value">—</span></div>
     <div class="stat"><span class="stat-label">24h volume</span><span id="stat-vol24" class="stat-value">—</span></div>
+    <div class="stat"><span class="stat-label">24h high / low</span><span id="stat-hl" class="stat-value">—</span></div>
     <div class="stat"><span class="stat-label">Open interest</span><span id="stat-oi" class="stat-value">—</span></div>
     <div class="stat"><span class="stat-label">Funding</span><span id="stat-funding" class="stat-value">—</span></div>
     <div class="stat"><span class="stat-label">1-min delta</span><span id="stat-delta1m" class="stat-value">—</span></div>
@@ -39,6 +40,7 @@
       <label><input type="checkbox" data-layer="liquidity" checked> Liquidity</label>
       <label><input type="checkbox" data-layer="markers" checked> Markers</label>
       <label><input type="checkbox" data-layer="fib" checked> Fibonacci</label>
+      <label><input type="checkbox" data-layer="sr" checked> S/R</label>
       <label><input type="checkbox" data-layer="levels" checked> Entry/Exit</label>
     </div>
   </div>
@@ -77,6 +79,11 @@
           </div>
         </div>
         <div class="liq-track"><div id="liq-bar-long" class="liq-fill"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Market knowledge <span class="muted">(auto-updating)</span></div>
+        <div id="knowledge" class="knowledge"></div>
       </div>
 
       <div class="card feed-card">

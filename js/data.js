@@ -48,6 +48,8 @@
         change24h: +ticker.priceChangePercent,
         lastPrice: +ticker.lastPrice,
         volume24h: +ticker.quoteVolume,
+        high24h: +ticker.highPrice,
+        low24h: +ticker.lowPrice,
       };
     }
 
@@ -236,6 +238,8 @@
         change24h: (Math.random() - 0.5) * 8,
         lastPrice: meta.sample,
         volume24h: 50e6 + Math.random() * 20e6,
+        high24h: meta.sample * 1.04,
+        low24h: meta.sample * 0.96,
       };
     }
   }

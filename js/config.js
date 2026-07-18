@@ -3,7 +3,14 @@ window.CFG = {
   SYMBOLS: [
     { id: 'UNIUSDT', base: 'UNI', name: 'Uniswap', pricePrecision: 4, sample: 9.2 },
     { id: 'ORDIUSDT', base: 'ORDI', name: 'Ordinals', pricePrecision: 3, sample: 11.5 },
+    { id: 'BTCUSDT', base: 'BTC', name: 'Bitcoin', pricePrecision: 1, sample: 100000 },
+    { id: 'ETHUSDT', base: 'ETH', name: 'Ethereum', pricePrecision: 2, sample: 3500 },
+    { id: 'SOLUSDT', base: 'SOL', name: 'Solana', pricePrecision: 3, sample: 160 },
+    { id: 'BNBUSDT', base: 'BNB', name: 'BNB', pricePrecision: 2, sample: 650 },
   ],
+
+  // multi-timeframe support/resistance sources
+  SR_TIMEFRAMES: [['1h', 'hourly'], ['1d', 'daily'], ['1w', 'weekly'], ['1M', 'monthly']],
 
   TIMEFRAMES: ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'],
   DEFAULT_TF: '15m',
@@ -33,6 +40,8 @@ window.CFG = {
     liquidation: 10,
     absorption: 10,
     fib: 8,
+    engulfing: 8,
+    doublePattern: 8,
     funding: 5,
   },
   SIGNAL_THRESHOLD: 35,       // |score| needed for LONG/SHORT
@@ -56,6 +65,8 @@ window.CFG = {
     fibLine: 'rgba(139,147,167,0.55)',
     fibGold: 'rgba(217,119,6,0.10)',
     fibLabel: '#a9b1c4',
+    srSupport: 'rgba(38,166,154,0.7)',
+    srResistance: 'rgba(239,83,80,0.7)',
     entry: '#3b82f6',
     stop: '#ef5350',
     target: '#26a69a',

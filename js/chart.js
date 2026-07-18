@@ -143,6 +143,56 @@
     }
   }
 
+  // ----- custom primitive: multi-timeframe support/resistance lines -----
+  class SRPrimitive {
+    constructor() {
+      this.levels = []; // {price, tf, strength, touches, kind:'S'|'R'}
+      this._chart = null;
+      this._series = null;
+      this._requestUpdate = null;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return { draw(target) { target.useBitmapCoordinateSpace((scope) => self._draw(scope)); } };
+        },
+        zOrder() { return 'bottom'; },
+      };
+    }
+    attached({ chart, series, requestUpdate }) { this._chart = chart; this._series = series; this._requestUpdate = requestUpdate; }
+    detached() { this._chart = null; this._series = null; }
+    paneViews() { return [this._paneView]; }
+    setLevels(levels) { this.levels = levels || []; if (this._requestUpdate) this._requestUpdate(); }
+
+    _draw(scope) {
+      if (!this._chart || !this._series || !this.levels.length) return;
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const width = scope.bitmapSize.width;
+      ctx.save();
+      ctx.font = `600 ${Math.round(9.5 * vr)}px 'Inter', sans-serif`;
+      for (const lv of this.levels) {
+        const y = this._series.priceToCoordinate(lv.price);
+        if (y === null) continue;
+        const by = Math.round(y * vr);
+        const color = lv.kind === 'S' ? C.srSupport : C.srResistance;
+        const w = lv.strength === 'strong' ? 2.5 : lv.strength === 'medium' ? 1.6 : 1;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(1, Math.round(w * hr));
+        ctx.setLineDash([8 * hr, 4 * hr]);
+        ctx.beginPath();
+        ctx.moveTo(0, by);
+        ctx.lineTo(width, by);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const stars = lv.strength === 'strong' ? '★★★' : lv.strength === 'medium' ? '★★' : '★';
+        ctx.fillStyle = color;
+        ctx.fillText(`${lv.kind === 'S' ? 'SUP' : 'RES'} ${lv.tf} ${stars} (${lv.touches}x)`, 8 * hr, by - 3 * vr);
+      }
+      ctx.restore();
+    }
+  }
+
   // ----- custom primitive: a name label written on the pane (top-left) -----
   class PaneLabelPrimitive {
     constructor(text) {
@@ -178,7 +228,8 @@
       this.pricePrecision = pricePrecision;
       this.priceLines = [];
       this.poolLines = [];
-      this.layers = { zones: true, markers: true, liquidity: true, levels: true, fib: true };
+      this.layers = { zones: true, markers: true, liquidity: true, levels: true, fib: true, sr: true };
+      this._srLevels = [];
       this._lastAnalysis = null;
       this._lastSignal = null;
       this._build();
@@ -223,6 +274,8 @@
       this.candles.attachPrimitive(this.zonesPrimitive);
       this.fibPrimitive = new FibPrimitive();
       this.candles.attachPrimitive(this.fibPrimitive);
+      this.srPrimitive = new SRPrimitive();
+      this.candles.attachPrimitive(this.srPrimitive);
       this.priceLabel = new PaneLabelPrimitive('PRICE · Smart-money structures (OB · FVG · liquidity · fib)');
       this.candles.attachPrimitive(this.priceLabel);
       this.markers = LWC.createSeriesMarkers(this.candles, []);
@@ -306,13 +359,20 @@
       this.delta.setData(candles.map((c) => ({ time: c.time, value: c.delta, color: c.delta >= 0 ? C.up : C.down })));
       let acc = 0;
       this.cvd.setData(candles.map((c) => { acc += c.delta; return { time: c.time, value: acc }; }));
-      this._cvdAcc = acc;
-      this._lastClosedTime = candles.length ? candles[candles.length - 1].time : 0;
+      // Binance history includes the still-forming candle as the last row —
+      // treat it as live so streamed updates keep flowing into it.
+      const last = candles[candles.length - 1];
+      this._cvdAcc = acc - (last ? last.delta : 0);
+      this._lastClosedTime = candles.length > 1 ? candles[candles.length - 2].time : 0;
+      this._candleTimes = candles.map((c) => c.time);
       this.setLiquidations(liqBars || []);
       this.chart.timeScale().scrollToRealTime();
     }
 
     updateCandle(c) {
+      if (this._candleTimes && (!this._candleTimes.length || c.time > this._candleTimes[this._candleTimes.length - 1])) {
+        this._candleTimes.push(c.time);
+      }
       this.candles.update({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
       this.volume.update({ time: c.time, value: c.volume, color: c.close >= c.open ? C.upDim : C.downDim });
       this.delta.update({ time: c.time, value: c.delta, color: c.delta >= 0 ? C.up : C.down });
@@ -324,32 +384,40 @@
       }
     }
 
-    // liqBars: [{time, long, short}] — longs plotted downward
+    // liqBars: [{time, long, short}] — longs plotted downward. Seeded with a
+    // zero row for every candle so the pane always has a proper scale.
     setLiquidations(bars) {
-      const rows = [];
-      for (const b of bars) {
-        if (b.short) rows.push({ time: b.time, value: b.short, color: C.shortLiq });
-        else if (b.long) rows.push({ time: b.time, value: -b.long, color: C.longLiq });
-        else rows.push({ time: b.time, value: 0, color: 'rgba(0,0,0,0)' });
-        // when both sides liquidated in one bucket keep the dominant, note the other via color mix
-        if (b.short && b.long) {
-          rows[rows.length - 1] = b.short >= b.long
-            ? { time: b.time, value: b.short, color: C.shortLiq }
-            : { time: b.time, value: -b.long, color: C.longLiq };
-        }
-      }
+      const byTime = new Map((bars || []).map((b) => [b.time, b]));
+      const rows = (this._candleTimes || []).map((t) => this._liqRow(byTime.get(t) || { time: t, long: 0, short: 0 }));
+      // liquidation buckets newer than the last candle (fresh live events)
+      const lastT = this._candleTimes && this._candleTimes.length ? this._candleTimes[this._candleTimes.length - 1] : 0;
+      for (const b of bars || []) if (b.time > lastT) rows.push(this._liqRow(b));
+      rows.sort((a, b) => a.time - b.time);
       this.liqSeries.setData(rows);
     }
 
+    _liqRow(b) {
+      const long = b.long || 0, short = b.short || 0;
+      if (!long && !short) return { time: b.time, value: 0, color: 'rgba(0,0,0,0)' };
+      return short >= long
+        ? { time: b.time, value: short, color: C.shortLiq }
+        : { time: b.time, value: -long, color: C.longLiq };
+    }
+
     updateLiquidationBar(b) {
-      const row = (b.short || 0) >= (b.long || 0)
-        ? { time: b.time, value: b.short || 0, color: C.shortLiq }
-        : { time: b.time, value: -(b.long || 0), color: C.longLiq };
-      this.liqSeries.update(row);
+      try {
+        this.liqSeries.update(this._liqRow(b));
+      } catch (e) { /* out-of-order bucket — ignored, next setHistory reconciles */ }
+    }
+
+    setSR(levels) {
+      this._srLevels = levels || [];
+      this.srPrimitive.setLevels(this.layers.sr ? this._srLevels : []);
     }
 
     setLayer(name, on) {
       this.layers[name] = on;
+      if (name === 'sr') { this.srPrimitive.setLevels(on ? this._srLevels : []); return; }
       if (this._lastAnalysis) this.applyAnalysis(this._lastAnalysis, this._lastSignal);
     }
 
@@ -438,13 +506,40 @@
             text: 'CVD DIV',
           });
         }
+        for (const e of (analysis.engulfing || []).slice(-6)) {
+          markers.push({
+            time: e.time,
+            position: e.side === 'bullish' ? 'belowBar' : 'aboveBar',
+            color: e.side === 'bullish' ? C.up : C.down,
+            shape: e.side === 'bullish' ? 'arrowUp' : 'arrowDown',
+            text: e.strong ? 'ENGULF!' : 'ENGULF',
+          });
+        }
       }
       markers.sort((a, b) => a.time - b.time);
       this.markers.setMarkers(markers);
 
-      // --- entry / stop / targets ---
+      // --- entry / stop / targets + swing top/bottom + double pattern ---
       for (const l of this.priceLines) this.candles.removePriceLine(l);
       this.priceLines = [];
+      if (analysis && analysis.fib) {
+        const mkMeta = (price, title) => this.priceLines.push(this.candles.createPriceLine({
+          price, color: C.inkMuted, lineWidth: 1, lineStyle: LWC.LineStyle.SparseDotted, axisLabelVisible: true, title,
+        }));
+        mkMeta(analysis.fib.high, 'TOP');
+        mkMeta(analysis.fib.low, 'BOTTOM');
+      }
+      if (analysis && analysis.doublePattern) {
+        const dp = analysis.doublePattern;
+        this.priceLines.push(this.candles.createPriceLine({
+          price: dp.level,
+          color: C.longLiq,
+          lineWidth: 2,
+          lineStyle: LWC.LineStyle.LargeDashed,
+          axisLabelVisible: true,
+          title: `${dp.type === 'double-top' ? 'DBL TOP' : 'DBL BOTTOM'} · break ${dp.breakChance}%`,
+        }));
+      }
       if (this.layers.levels && signal && signal.levels) {
         const L = signal.levels;
         const mk = (price, color, title, style) => this.priceLines.push(this.candles.createPriceLine({

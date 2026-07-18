@@ -263,6 +263,30 @@ body {
 .tag-liq-short { background: rgba(59, 130, 246, 0.18); color: #6ea8fe; }
 .feed-text { flex: 1 1 100%; color: var(--ink); }
 
+/* knowledge panel */
+.knowledge { display: flex; flex-direction: column; gap: 12px; }
+.k-section {}
+.k-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+.k-body { font-size: 12px; line-height: 1.55; color: var(--ink); }
+.ko-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  padding: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+.ko-row.buy b { color: var(--up); }
+.ko-row.sell b { color: var(--down); }
+.ko-time { margin-left: auto; color: var(--ink-muted); font-size: 10px; }
+
 /* footer */
 .footer {
   padding: 8px 16px;
@@ -278,4 +302,40 @@ body {
   .chart-wrap { border-right: none; }
   .chart { min-height: 420px; }
   .side { max-height: none; }
+}
+
+/* mobile */
+@media (max-width: 640px) {
+  body { font-size: 13px; }
+  .topbar { gap: 8px; padding: 8px 10px; }
+  .brand-sub { display: none; }
+  .brand-name { font-size: 16px; }
+  .tabs, .tfs {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .tabs::-webkit-scrollbar, .tfs::-webkit-scrollbar, .stats-strip::-webkit-scrollbar { display: none; }
+  .tab { flex-shrink: 0; padding: 5px 10px; }
+  .pill { flex-shrink: 0; padding: 5px 11px; min-height: 30px; }
+  .top-right { margin-left: 0; width: 100%; justify-content: space-between; }
+  .live-price { font-size: 18px; }
+  .stats-strip {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    gap: 16px;
+    scrollbar-width: none;
+  }
+  .stat { flex-shrink: 0; }
+  .stat-layers { margin-left: 0; }
+  .stat-layers label { min-height: 28px; }
+  .chart { min-height: 58vh; }
+  .ohlc-legend { font-size: 10px; gap: 8px; padding: 2px 8px; flex-wrap: wrap; max-width: 70%; }
+  .side { padding: 8px; }
+  .sig-direction { font-size: 22px; min-width: 78px; }
+  .feed { max-height: 300px; }
 }

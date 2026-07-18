@@ -263,6 +263,148 @@
     return divergence;
   }
 
+  // ---------- engulfing candles ----------
+  function findEngulfing(candles) {
+    const out = [];
+    for (let i = Math.max(1, candles.length - 60); i < candles.length; i++) {
+      const p = candles[i - 1], c = candles[i];
+      const pBody = Math.abs(p.close - p.open);
+      const body = Math.abs(c.close - c.open);
+      if (pBody === 0 || body < pBody * 1.05) continue;
+      const strong = c.volume > CFG.VOL_SPIKE_MULT * volSMA(candles, i - 1);
+      if (p.close < p.open && c.close > c.open && c.close >= Math.max(p.open, p.close) && c.open <= Math.min(p.open, p.close)) {
+        out.push({ idx: i, time: c.time, side: 'bullish', strong });
+      } else if (p.close > p.open && c.close < c.open && c.close <= Math.min(p.open, p.close) && c.open >= Math.max(p.open, p.close)) {
+        out.push({ idx: i, time: c.time, side: 'bearish', strong });
+      }
+    }
+    return out.slice(-8);
+  }
+
+  // ---------- support / resistance levels (per timeframe) ----------
+  // Cluster swing pivots into levels; strength = number of touches.
+  function srLevels(candles, tfLabel) {
+    if (!candles || candles.length < 30) return [];
+    const pivots = findPivots(candles, 2);
+    const a = atr(candles, candles.length - 1);
+    const lastClose = candles[candles.length - 1].close;
+    const tol = Math.max(a * 0.35, lastClose * 0.002);
+    const clusters = [];
+    for (const p of pivots) {
+      let cl = clusters.find((l) => Math.abs(l.priceSum / l.touches - p.price) < tol);
+      if (!cl) { cl = { priceSum: 0, touches: 0, lastIdx: 0 }; clusters.push(cl); }
+      cl.priceSum += p.price;
+      cl.touches++;
+      cl.lastIdx = Math.max(cl.lastIdx, p.idx);
+    }
+    return clusters
+      .filter((l) => l.touches >= 2)
+      .map((l) => ({
+        price: l.priceSum / l.touches,
+        tf: tfLabel,
+        touches: l.touches,
+        strength: l.touches >= 5 ? 'strong' : l.touches >= 3 ? 'medium' : 'weak',
+        recency: (candles.length - 1 - l.lastIdx) / candles.length,
+      }));
+  }
+
+  // ---------- double top / double bottom + break-chance estimate ----------
+  function findDoublePattern(candles, pivots, cvd, trend) {
+    const lastIdx = candles.length - 1;
+    const tolPct = 0.005;
+    const build = (pair, type) => {
+      const [p1, p2] = pair;
+      if (Math.abs(p2.price - p1.price) / p1.price >= tolPct) return null;
+      if (lastIdx - p2.idx > 30 || p2.idx - p1.idx < 4) return null;
+      // neckline: extreme between the two tests
+      let neck = type === 'double-top' ? Infinity : -Infinity;
+      for (let i = p1.idx; i <= p2.idx; i++) {
+        neck = type === 'double-top' ? Math.min(neck, candles[i].low) : Math.max(neck, candles[i].high);
+      }
+      // chance that price BREAKS THROUGH the level (vs reversing off it)
+      let chance = 45;
+      const reasons = [];
+      const v1 = candles[p1.idx].volume, v2 = candles[p2.idx].volume;
+      if (v2 > v1 * 1.1) { chance += 12; reasons.push('second test came on higher volume'); }
+      else if (v2 < v1 * 0.9) { chance -= 12; reasons.push('volume faded on the second test'); }
+      const cvdChg = cvd[p2.idx].value - cvd[p1.idx].value;
+      const pushDir = type === 'double-top' ? 1 : -1;
+      if (cvdChg * pushDir > 0) { chance += 12; reasons.push(type === 'double-top' ? 'buyers kept accumulating between tests (CVD rising)' : 'sellers kept pressing between tests (CVD falling)'); }
+      else { chance -= 12; reasons.push(type === 'double-top' ? 'buying pressure faded between tests (CVD falling)' : 'selling pressure faded between tests (CVD rising)'); }
+      if ((type === 'double-top' && trend === 'up') || (type === 'double-bottom' && trend === 'down')) {
+        chance += 10; reasons.push('the prevailing trend pushes into the level');
+      } else if ((type === 'double-top' && trend === 'down') || (type === 'double-bottom' && trend === 'up')) {
+        chance -= 10; reasons.push('the prevailing trend leans against a break');
+      }
+      chance = Math.max(15, Math.min(85, chance));
+      return {
+        type,
+        level: (p1.price + p2.price) / 2,
+        neckline: neck,
+        time1: p1.time, time2: p2.time, idx2: p2.idx,
+        breakChance: chance,
+        reasons,
+      };
+    };
+    const highs = pivots.filter((p) => p.type === 'H').slice(-2);
+    const lows = pivots.filter((p) => p.type === 'L').slice(-2);
+    const top = highs.length === 2 ? build(highs, 'double-top') : null;
+    const bottom = lows.length === 2 ? build(lows, 'double-bottom') : null;
+    if (top && bottom) return top.idx2 >= bottom.idx2 ? top : bottom; // most recent wins
+    return top || bottom;
+  }
+
+  // ---------- volume profile: where the buying / selling actually happened ----------
+  function volumeProfile(candles, bins = 24) {
+    const from = Math.max(0, candles.length - 120);
+    let lo = Infinity, hi = -Infinity;
+    for (let i = from; i < candles.length; i++) {
+      lo = Math.min(lo, candles[i].low);
+      hi = Math.max(hi, candles[i].high);
+    }
+    if (!(hi > lo)) return null;
+    const step = (hi - lo) / bins;
+    const vols = new Array(bins).fill(0);
+    const deltas = new Array(bins).fill(0);
+    for (let i = from; i < candles.length; i++) {
+      const c = candles[i];
+      const b = Math.min(bins - 1, Math.max(0, Math.floor(((c.high + c.low) / 2 - lo) / step)));
+      vols[b] += c.volume;
+      deltas[b] += c.delta;
+    }
+    let poc = 0, buyB = 0, sellB = 0;
+    for (let i = 0; i < bins; i++) {
+      if (vols[i] > vols[poc]) poc = i;
+      if (deltas[i] > deltas[buyB]) buyB = i;
+      if (deltas[i] < deltas[sellB]) sellB = i;
+    }
+    const price = (b) => lo + step * (b + 0.5);
+    return {
+      poc: price(poc),
+      buyArea: price(buyB), buyDelta: deltas[buyB],
+      sellArea: price(sellB), sellDelta: deltas[sellB],
+    };
+  }
+
+  // ---------- accumulation / distribution phase (Wyckoff-style heuristic) ----------
+  function marketPhase(candles, cvd) {
+    const n = candles.length;
+    const from = Math.max(0, n - 40);
+    const pchg = (candles[n - 1].close - candles[from].close) / candles[from].close;
+    const cvdChg = cvd[n - 1].value - cvd[from].value;
+    let totalAbs = 0;
+    for (let i = from; i < n; i++) totalAbs += Math.abs(candles[i].delta);
+    const ratio = totalAbs ? cvdChg / totalAbs : 0;
+    const flat = Math.abs(pchg) < 0.02;
+    if (flat && ratio > 0.06) return { phase: 'accumulation', note: 'price is going sideways while net buying quietly builds — smart money may be accumulating' };
+    if (flat && ratio < -0.06) return { phase: 'distribution', note: 'price is going sideways while net selling quietly builds — smart money may be distributing' };
+    if (pchg > 0.02 && ratio > 0) return { phase: 'markup', note: 'price and net buying are rising together — healthy uptrend participation' };
+    if (pchg < -0.02 && ratio < 0) return { phase: 'markdown', note: 'price and net selling are falling together — sellers remain in control' };
+    if (pchg > 0.02 && ratio < 0) return { phase: 'weak rally', note: 'price is rising but net flow is selling — rally lacks real buying, be careful' };
+    if (pchg < -0.02 && ratio > 0) return { phase: 'weak selloff', note: 'price is falling but net flow is buying — dip is being bought' };
+    return { phase: 'neutral', note: 'no clear accumulation or distribution footprint right now' };
+  }
+
   // ---------- fibonacci retracement of the latest swing ----------
   // Anchored to the most recent significant swing pair; retracement levels
   // plus 1.272 / 1.618 extensions, with the 0.618–0.786 "golden pocket".
@@ -306,15 +448,19 @@
     const cvd = computeCVD(candles);
     const divergence = findDeltaDivergence(candles, pivots, cvd);
     const fib = computeFib(candles);
+    const engulfing = findEngulfing(candles);
+    const doublePattern = findDoublePattern(candles, pivots, cvd, structure.trend);
+    const profile = volumeProfile(candles);
+    const phase = marketPhase(candles, cvd);
     const lastATR = atr(candles, candles.length - 1);
     return {
       pivots, structure, orderBlocks, fvgs, liquidity, absorption, cvd,
-      divergence, fib, atr: lastATR,
+      divergence, fib, engulfing, doublePattern, profile, phase, atr: lastATR,
       lastVolSMA: volSMA(candles, candles.length - 1),
     };
   }
 
-  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, atr };
+  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, findEngulfing, srLevels, findDoublePattern, volumeProfile, marketPhase, atr };
   if (typeof window !== 'undefined') window.Analysis = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

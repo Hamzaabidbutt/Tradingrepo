@@ -112,7 +112,28 @@
       });
     }
 
-    // 10. funding extreme (contrarian)
+    // 10. engulfing candle (last 3 bars)
+    const eng = (analysis.engulfing || []).filter((e) => lastIdx - e.idx <= 3).pop();
+    if (eng) {
+      factors.push({
+        name: 'Engulfing', weight: W.engulfing, dir: eng.side === 'bullish' ? 1 : -1,
+        note: `${cap(eng.side)} engulfing candle${eng.strong ? ' on high volume' : ''} — ${eng.side === 'bullish' ? 'buyers overwhelmed the previous candle' : 'sellers overwhelmed the previous candle'}`,
+      });
+    }
+
+    // 11. double top / bottom: low break-chance favors the reversal,
+    // high break-chance favors the breakout
+    const dp = analysis.doublePattern;
+    if (dp && lastIdx - dp.idx2 <= 20) {
+      const breakout = dp.breakChance >= 55;
+      const dir = dp.type === 'double-top' ? (breakout ? 1 : -1) : (breakout ? -1 : 1);
+      factors.push({
+        name: dp.type === 'double-top' ? 'Double top' : 'Double bottom', weight: W.doublePattern, dir,
+        note: `${dp.type === 'double-top' ? 'Double top' : 'Double bottom'} at ${fmt(dp.level)} — ~${dp.breakChance}% chance of breaking through (${dp.reasons[0]})`,
+      });
+    }
+
+    // 12. funding extreme (contrarian)
     if (typeof ctx.funding === 'number' && Math.abs(ctx.funding) > 0.0003) {
       factors.push({
         name: 'Funding', weight: W.funding, dir: ctx.funding > 0 ? -1 : 1,
