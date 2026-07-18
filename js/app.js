@@ -22,6 +22,17 @@
   let signal = null;
   let analyzeTimer = null;
 
+  // Surface any runtime error on the page itself so remote users can report it.
+  window.addEventListener('error', (e) => {
+    const el = document.getElementById('errBanner');
+    if (el) {
+      el.textContent = '⚠ App error: ' + (e.message || 'unknown') + ' — please hard-refresh (Ctrl+Shift+R); if it persists, screenshot this message.';
+      el.classList.remove('hidden');
+    }
+  });
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   // ---------- boot ----------
   async function boot() {
     buildTabs();
@@ -47,7 +58,12 @@
     reasoning.clear();
     try {
       if (state.demo) throw new Error('demo');
-      state.candles = await feed.fetchKlines(state.symbol, state.tf, CFG.HISTORY_LIMIT);
+      try {
+        state.candles = await feed.fetchKlines(state.symbol, state.tf, CFG.HISTORY_LIMIT);
+      } catch (e1) {
+        await sleep(1500); // transient failure — retry once before giving up on live data
+        state.candles = await feed.fetchKlines(state.symbol, state.tf, CFG.HISTORY_LIMIT);
+      }
     } catch (e) {
       if (!state.demo) {
         state.demo = true;
@@ -377,12 +393,19 @@
     });
   }
 
+  // rAF-throttled: BTC pushes dozens of trades per second
+  let pricePending = null, priceRaf = null;
   function updatePriceHeader(price) {
-    const el = $('#livePrice');
-    const prev = parseFloat(el.dataset.prev || '0');
-    el.textContent = price.toFixed(symMeta().pricePrecision);
-    el.className = 'live-price ' + (price >= prev ? 'pos' : 'neg');
-    el.dataset.prev = price;
+    pricePending = price;
+    if (priceRaf) return;
+    priceRaf = requestAnimationFrame(() => {
+      priceRaf = null;
+      const el = $('#livePrice');
+      const prev = parseFloat(el.dataset.prev || '0');
+      el.textContent = pricePending.toFixed(symMeta().pricePrecision);
+      el.className = 'live-price ' + (pricePending >= prev ? 'pos' : 'neg');
+      el.dataset.prev = pricePending;
+    });
   }
 
   function renderTrendBadge() {

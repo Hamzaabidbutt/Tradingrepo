@@ -36,6 +36,15 @@ body {
 .muted { color: var(--ink-muted); font-weight: 400; font-size: 11px; }
 
 /* ---------- top bar ---------- */
+.err-banner {
+  background: #3a1414;
+  color: #f0a0a0;
+  text-align: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid #5c1f1f;
+}
+
 .demo-banner {
   background: #3a2b12;
   color: #f0c674;
