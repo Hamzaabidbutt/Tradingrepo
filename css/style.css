@@ -181,6 +181,21 @@ body {
 }
 .ohlc-legend b { font-weight: 600; color: var(--ink); }
 
+.countdown {
+  position: absolute;
+  top: 24px;
+  right: 78px;
+  z-index: 5;
+  pointer-events: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+  background: rgba(19, 23, 34, 0.78);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+}
+
 /* ---------- side panel ---------- */
 .side {
   display: flex;

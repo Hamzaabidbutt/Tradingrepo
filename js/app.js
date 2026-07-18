@@ -40,7 +40,7 @@
     buildLayerToggles();
     dash = new window.Dashboard($('#chart'), symMeta().pricePrecision);
 
-    feed.on('kline', onKline);
+    feed.on('kline', (m) => { lastWsKline = Date.now(); onKline(m); });
     feed.on('aggTrade', onAggTrade);
     feed.on('forceOrder', onForceOrder);
     feed.on('status', onStatus);
@@ -48,6 +48,9 @@
     await loadSymbol();
     if (!state.demo) feed.connect();
     setInterval(refreshStats, 60000);
+    setInterval(renderCountdown, 1000);
+    setInterval(flushDirtyCandle, 250);
+    setInterval(wsWatchdog, 4000);
   }
 
   function symMeta() { return CFG.SYMBOLS.find((s) => s.id === state.symbol); }
@@ -73,6 +76,8 @@
       state.candles = feed.demoKlines(state.symbol, state.tf, CFG.HISTORY_LIMIT);
     }
     state.liveCandle = null;
+    candleDirty = null;
+    lastWsKline = Date.now(); // grace period before the polling fallback kicks in
     bigOrders.avg = 0; bigOrders.n = 0; bigOrders.list = [];
     dash.setHistory(state.candles, liqBarsFor(state.symbol));
     feed.setKlineStream(state.symbol, state.tf);
@@ -142,6 +147,91 @@
     rollDelta(t);
     trackBigOrder(t);
     updatePriceHeader(t.price); // tick-by-tick price, faster than kline pushes
+    applyTradeToCandle(t);      // move the forming candle on every trade
+  }
+
+  // ---- tick-level candle movement ----
+  // Every trade nudges the forming candle immediately instead of waiting
+  // for the next kline push; flushed to the chart at up to 4 fps.
+  let candleDirty = null;
+  function applyTradeToCandle(t) {
+    const step = window.intervalSeconds(state.tf);
+    const bucket = Math.floor(t.time / 1000 / step) * step;
+    let c = state.liveCandle;
+    const last = state.candles[state.candles.length - 1];
+    if (!c && last && last.time === bucket) c = last;
+    if (c && c.time === bucket) {
+      c.close = t.price;
+      c.high = Math.max(c.high, t.price);
+      c.low = Math.min(c.low, t.price);
+      c.volume += t.qty;
+      c.delta += t.side === 'buy' ? t.qty : -t.qty;
+    } else if (!c || bucket > c.time) {
+      // a new bucket opened before the first kline push arrived
+      c = {
+        time: bucket, open: t.price, high: t.price, low: t.price, close: t.price,
+        volume: t.qty, delta: t.side === 'buy' ? t.qty : -t.qty, closed: false,
+      };
+      state.liveCandle = c;
+    } else {
+      return;
+    }
+    candleDirty = c;
+  }
+
+  function flushDirtyCandle() {
+    if (!candleDirty || !dash) return;
+    dash.updateCandle({ ...candleDirty });
+    candleDirty = null;
+  }
+
+  // ---- candle-close countdown ----
+  function renderCountdown() {
+    const el = $('#countdown');
+    if (!el) return;
+    const step = window.intervalSeconds(state.tf);
+    const now = Math.floor(Date.now() / 1000);
+    const last = state.liveCandle || state.candles[state.candles.length - 1];
+    const closeAt = last ? last.time + step : (Math.floor(now / step) + 1) * step;
+    const remaining = Math.max(0, closeAt - now);
+    el.textContent = `${state.tf} candle closes in ${fmtDur(remaining)}`;
+  }
+
+  function fmtDur(s) {
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const mm = String(m).padStart(2, '0'), ss = String(sec).padStart(2, '0');
+    if (d) return `${d}d ${String(h).padStart(2, '0')}:${mm}:${ss}`;
+    if (h) return `${h}:${mm}:${ss}`;
+    return `${mm}:${ss}`;
+  }
+
+  // ---- WebSocket watchdog: fall back to fast REST polling if the kline
+  // stream goes quiet (some networks block WebSockets entirely) ----
+  let lastWsKline = Date.now();
+  let pollTimer = null;
+  function wsWatchdog() {
+    if (state.demo) return;
+    const stale = Date.now() - lastWsKline > 8000;
+    if (stale && !pollTimer) {
+      pollTimer = setInterval(pollKlines, 2500);
+      setStatus('live', 'LIVE · POLLING');
+    } else if (!stale && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      setStatus('live', 'LIVE');
+    }
+  }
+
+  async function pollKlines() {
+    if (state.demo) return;
+    try {
+      const rows = await feed.fetchKlines(state.symbol, state.tf, 2);
+      if (!rows.length) return;
+      if (rows.length === 2) onKline({ symbol: state.symbol, interval: state.tf, candle: { ...rows[0], closed: true } });
+      const lastRow = { ...rows[rows.length - 1], closed: false };
+      onKline({ symbol: state.symbol, interval: state.tf, candle: lastRow });
+    } catch (e) { /* transient — next poll retries */ }
   }
 
   // ---- big orders (whale prints) ----
