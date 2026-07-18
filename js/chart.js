@@ -1,0 +1,337 @@
+// Chart layer: lightweight-charts v5 with 4 panes (price, volume,
+// delta+CVD, liquidations), a custom primitive that paints order-block /
+// FVG zones, structure markers and entry/stop/target lines.
+(function () {
+  const LWC = window.LightweightCharts;
+  const C = window.CFG.COLORS;
+
+  // ----- custom primitive: translucent zone rectangles extending right -----
+  class ZonesPrimitive {
+    constructor() {
+      this.zones = []; // {timeStart, top, bottom, color, border, label}
+      this._chart = null;
+      this._series = null;
+      this._requestUpdate = null;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return {
+            draw(target) {
+              target.useBitmapCoordinateSpace((scope) => self._draw(scope));
+            },
+          };
+        },
+        zOrder() { return 'bottom'; },
+      };
+    }
+
+    attached({ chart, series, requestUpdate }) {
+      this._chart = chart;
+      this._series = series;
+      this._requestUpdate = requestUpdate;
+    }
+
+    detached() { this._chart = null; this._series = null; }
+
+    paneViews() { return [this._paneView]; }
+
+    setZones(zones) {
+      this.zones = zones;
+      if (this._requestUpdate) this._requestUpdate();
+    }
+
+    _draw(scope) {
+      if (!this._chart || !this._series) return;
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const ts = this._chart.timeScale();
+      const range = ts.getVisibleRange();
+      if (!range) return;
+      const rightEdge = scope.bitmapSize.width;
+      ctx.save();
+      ctx.font = `${Math.round(10 * vr)}px 'Inter', sans-serif`;
+      for (const z of this.zones) {
+        if (z.timeStart > range.to) continue;
+        let x1 = ts.timeToCoordinate(z.timeStart);
+        if (x1 === null) x1 = z.timeStart < range.from ? 0 : null;
+        if (x1 === null) continue;
+        const yTop = this._series.priceToCoordinate(z.top);
+        const yBot = this._series.priceToCoordinate(z.bottom);
+        if (yTop === null || yBot === null) continue;
+        const bx = Math.round(x1 * hr);
+        const by = Math.round(Math.min(yTop, yBot) * vr);
+        const bh = Math.max(1, Math.round(Math.abs(yBot - yTop) * vr));
+        ctx.fillStyle = z.color;
+        ctx.fillRect(bx, by, rightEdge - bx, bh);
+        if (z.border) {
+          ctx.strokeStyle = z.border;
+          ctx.lineWidth = Math.max(1, Math.round(hr));
+          ctx.strokeRect(bx, by, rightEdge - bx, bh);
+        }
+        if (z.label) {
+          ctx.fillStyle = z.labelColor || C.inkMuted;
+          ctx.fillText(z.label, bx + 4 * hr, by + Math.min(bh - 2, 11 * vr));
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  class Dashboard {
+    constructor(container, pricePrecision) {
+      this.container = container;
+      this.pricePrecision = pricePrecision;
+      this.priceLines = [];
+      this.poolLines = [];
+      this.layers = { zones: true, markers: true, liquidity: true, levels: true };
+      this._lastAnalysis = null;
+      this._lastSignal = null;
+      this._build();
+    }
+
+    _build() {
+      this.chart = LWC.createChart(this.container, {
+        autoSize: true,
+        layout: {
+          background: { type: 'solid', color: C.surface },
+          textColor: C.inkMuted,
+          fontFamily: "'Inter', -apple-system, sans-serif",
+          panes: { separatorColor: C.grid, separatorHoverColor: '#2a3242', enableResize: true },
+        },
+        grid: {
+          vertLines: { color: C.grid },
+          horzLines: { color: C.grid },
+        },
+        crosshair: {
+          mode: LWC.CrosshairMode.Normal,
+          vertLine: { labelBackgroundColor: '#2a3242' },
+          horzLine: { labelBackgroundColor: '#2a3242' },
+        },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: C.grid, rightOffset: 8 },
+        rightPriceScale: { borderColor: C.grid },
+        localization: {
+          locale: 'en-US',
+          priceFormatter: (p) => p.toFixed(this.pricePrecision),
+        },
+      });
+
+      const fmt = { type: 'price', precision: this.pricePrecision, minMove: Math.pow(10, -this.pricePrecision) };
+
+      // pane 0: candles
+      this.candles = this.chart.addSeries(LWC.CandlestickSeries, {
+        upColor: C.up, downColor: C.down,
+        wickUpColor: C.up, wickDownColor: C.down,
+        borderVisible: false,
+        priceFormat: fmt,
+      }, 0);
+      this.zonesPrimitive = new ZonesPrimitive();
+      this.candles.attachPrimitive(this.zonesPrimitive);
+      this.markers = LWC.createSeriesMarkers(this.candles, []);
+
+      // pane 1: volume
+      this.volume = this.chart.addSeries(LWC.HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'right',
+        lastValueVisible: false,
+        priceLineVisible: false,
+      }, 1);
+
+      // pane 2: delta histogram + CVD line
+      this.delta = this.chart.addSeries(LWC.HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'right',
+        base: 0,
+        lastValueVisible: false,
+        priceLineVisible: false,
+      }, 2);
+      this.cvd = this.chart.addSeries(LWC.LineSeries, {
+        color: C.cvd,
+        lineWidth: 2,
+        priceScaleId: 'cvd',
+        priceFormat: { type: 'volume' },
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+      }, 2);
+
+      // pane 3: liquidations (longs drawn down in amber, shorts up in blue)
+      this.liqSeries = this.chart.addSeries(LWC.HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'right',
+        base: 0,
+        lastValueVisible: false,
+        priceLineVisible: false,
+      }, 3);
+
+      const panes = this.chart.panes();
+      if (panes[1]) panes[1].setHeight(80);
+      if (panes[2]) panes[2].setHeight(110);
+      if (panes[3]) panes[3].setHeight(80);
+    }
+
+    setPricePrecision(p) {
+      this.pricePrecision = p;
+      const fmt = { type: 'price', precision: p, minMove: Math.pow(10, -p) };
+      this.candles.applyOptions({ priceFormat: fmt });
+    }
+
+    setHistory(candles, liqBars) {
+      this.candles.setData(candles.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+      this.volume.setData(candles.map((c) => ({ time: c.time, value: c.volume, color: c.close >= c.open ? C.upDim : C.downDim })));
+      this.delta.setData(candles.map((c) => ({ time: c.time, value: c.delta, color: c.delta >= 0 ? C.up : C.down })));
+      let acc = 0;
+      this.cvd.setData(candles.map((c) => { acc += c.delta; return { time: c.time, value: acc }; }));
+      this._cvdAcc = acc;
+      this._lastClosedTime = candles.length ? candles[candles.length - 1].time : 0;
+      this.setLiquidations(liqBars || []);
+      this.chart.timeScale().scrollToRealTime();
+    }
+
+    updateCandle(c) {
+      this.candles.update({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
+      this.volume.update({ time: c.time, value: c.volume, color: c.close >= c.open ? C.upDim : C.downDim });
+      this.delta.update({ time: c.time, value: c.delta, color: c.delta >= 0 ? C.up : C.down });
+      const liveDelta = c.time > this._lastClosedTime ? c.delta : 0; // live bar rides on top of the closed accumulator
+      this.cvd.update({ time: c.time, value: this._cvdAcc + liveDelta });
+      if (c.closed && c.time > this._lastClosedTime) {
+        this._cvdAcc += c.delta;
+        this._lastClosedTime = c.time;
+      }
+    }
+
+    // liqBars: [{time, long, short}] — longs plotted downward
+    setLiquidations(bars) {
+      const rows = [];
+      for (const b of bars) {
+        if (b.short) rows.push({ time: b.time, value: b.short, color: C.shortLiq });
+        else if (b.long) rows.push({ time: b.time, value: -b.long, color: C.longLiq });
+        else rows.push({ time: b.time, value: 0, color: 'rgba(0,0,0,0)' });
+        // when both sides liquidated in one bucket keep the dominant, note the other via color mix
+        if (b.short && b.long) {
+          rows[rows.length - 1] = b.short >= b.long
+            ? { time: b.time, value: b.short, color: C.shortLiq }
+            : { time: b.time, value: -b.long, color: C.longLiq };
+        }
+      }
+      this.liqSeries.setData(rows);
+    }
+
+    updateLiquidationBar(b) {
+      const row = (b.short || 0) >= (b.long || 0)
+        ? { time: b.time, value: b.short || 0, color: C.shortLiq }
+        : { time: b.time, value: -(b.long || 0), color: C.longLiq };
+      this.liqSeries.update(row);
+    }
+
+    setLayer(name, on) {
+      this.layers[name] = on;
+      if (this._lastAnalysis) this.applyAnalysis(this._lastAnalysis, this._lastSignal);
+    }
+
+    applyAnalysis(analysis, signal) {
+      this._lastAnalysis = analysis;
+      this._lastSignal = signal;
+
+      // --- zones ---
+      const zones = [];
+      if (this.layers.zones && analysis) {
+        for (const b of analysis.orderBlocks) {
+          const respected = b.state === 'respected';
+          zones.push({
+            timeStart: b.time,
+            top: b.top, bottom: b.bottom,
+            color: b.dir === 'up' ? (respected ? C.obBullRespected : C.obBull) : (respected ? C.obBearRespected : C.obBear),
+            border: respected ? (b.dir === 'up' ? C.up : C.down) : null,
+            label: `${b.dir === 'up' ? 'Demand OB' : 'Supply OB'}${respected ? ' ✓ respected' : ''}`,
+            labelColor: b.dir === 'up' ? C.up : C.down,
+          });
+        }
+        for (const g of analysis.fvgs) {
+          zones.push({
+            timeStart: g.time,
+            top: g.top, bottom: g.bottom,
+            color: g.dir === 'up' ? C.fvgBull : C.fvgBear,
+            label: 'FVG',
+          });
+        }
+      }
+      this.zonesPrimitive.setZones(zones);
+
+      // --- liquidity pool lines ---
+      for (const l of this.poolLines) this.candles.removePriceLine(l);
+      this.poolLines = [];
+      if (this.layers.liquidity && analysis) {
+        for (const p of analysis.liquidity.pools) {
+          this.poolLines.push(this.candles.createPriceLine({
+            price: p.price,
+            color: C.liquidity,
+            lineWidth: 1,
+            lineStyle: LWC.LineStyle.Dashed,
+            axisLabelVisible: false,
+            title: p.eq ? (p.type === 'high' ? 'EQH liquidity' : 'EQL liquidity') : (p.type === 'high' ? 'swing-high liq' : 'swing-low liq'),
+          }));
+        }
+      }
+
+      // --- markers ---
+      const markers = [];
+      if (this.layers.markers && analysis) {
+        for (const ev of analysis.structure.events.slice(-14)) {
+          markers.push({
+            time: ev.time,
+            position: ev.dir === 'up' ? 'belowBar' : 'aboveBar',
+            color: ev.kind === 'CHoCH' ? (ev.dir === 'up' ? C.up : C.down) : C.inkMuted,
+            shape: ev.dir === 'up' ? 'arrowUp' : 'arrowDown',
+            text: ev.kind,
+          });
+        }
+        for (const s of analysis.liquidity.sweeps.slice(-8)) {
+          markers.push({
+            time: s.time,
+            position: s.dir === 'low' ? 'belowBar' : 'aboveBar',
+            color: C.longLiq,
+            shape: 'circle',
+            text: 'HUNT',
+          });
+        }
+        for (const a of analysis.absorption.slice(-6)) {
+          markers.push({
+            time: a.time,
+            position: a.side === 'bullish' ? 'belowBar' : 'aboveBar',
+            color: C.shortLiq,
+            shape: 'square',
+            text: 'ABS',
+          });
+        }
+        if (analysis.divergence) {
+          markers.push({
+            time: analysis.divergence.time,
+            position: analysis.divergence.side === 'bullish' ? 'belowBar' : 'aboveBar',
+            color: C.cvd,
+            shape: analysis.divergence.side === 'bullish' ? 'arrowUp' : 'arrowDown',
+            text: 'CVD DIV',
+          });
+        }
+      }
+      markers.sort((a, b) => a.time - b.time);
+      this.markers.setMarkers(markers);
+
+      // --- entry / stop / targets ---
+      for (const l of this.priceLines) this.candles.removePriceLine(l);
+      this.priceLines = [];
+      if (this.layers.levels && signal && signal.levels) {
+        const L = signal.levels;
+        const mk = (price, color, title, style) => this.priceLines.push(this.candles.createPriceLine({
+          price, color, lineWidth: 2, lineStyle: style, axisLabelVisible: true, title,
+        }));
+        mk(L.entry, C.entry, `ENTRY ${signal.direction}`, LWC.LineStyle.Solid);
+        mk(L.stop, C.stop, 'STOP', LWC.LineStyle.Dashed);
+        mk(L.t1, C.target, 'TARGET 1', LWC.LineStyle.Dotted);
+        mk(L.t2, C.target, 'TARGET 2', LWC.LineStyle.Dotted);
+      }
+    }
+  }
+
+  window.Dashboard = Dashboard;
+})();

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlowSight — UNI &amp; ORDI Smart-Money Dashboard</title>
+  <meta name="description" content="Live smart-money analysis for UNIUSDT and ORDIUSDT: liquidity hunts, order blocks, FVGs, CHoCH/BOS, delta volume and liquidations with plain-language reasoning." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="demoBanner" class="demo-banner hidden">
+    ⚠ Binance API unreachable from your network — showing <b>DEMO DATA</b> so you can explore the tool. Signals here are not real.
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">📡</span>
+      <span class="brand-name">FlowSight</span>
+      <span class="brand-sub">smart-money flow terminal</span>
+    </div>
+    <nav id="tabs" class="tabs" aria-label="Coin"></nav>
+    <nav id="tfs" class="tfs" aria-label="Timeframe"></nav>
+    <div class="top-right">
+      <span id="trendBadge" class="badge badge-neutral">—</span>
+      <span id="livePrice" class="live-price" data-prev="0">—</span>
+      <span id="connStatus" class="conn loading">CONNECTING…</span>
+    </div>
+  </header>
+
+  <div class="stats-strip">
+    <div class="stat"><span class="stat-label">24h change</span><span id="stat-change" class="stat-value">—</span></div>
+    <div class="stat"><span class="stat-label">24h volume</span><span id="stat-vol24" class="stat-value">—</span></div>
+    <div class="stat"><span class="stat-label">Open interest</span><span id="stat-oi" class="stat-value">—</span></div>
+    <div class="stat"><span class="stat-label">Funding</span><span id="stat-funding" class="stat-value">—</span></div>
+    <div class="stat"><span class="stat-label">1-min delta</span><span id="stat-delta1m" class="stat-value">—</span></div>
+    <div class="stat stat-layers">
+      <label><input type="checkbox" data-layer="zones" checked> OB / FVG</label>
+      <label><input type="checkbox" data-layer="liquidity" checked> Liquidity</label>
+      <label><input type="checkbox" data-layer="markers" checked> Markers</label>
+      <label><input type="checkbox" data-layer="levels" checked> Entry/Exit</label>
+    </div>
+  </div>
+
+  <main class="layout">
+    <section class="chart-wrap">
+      <div id="chart" class="chart"></div>
+      <div class="pane-legend">
+        <span><i class="sw" style="background:#26a69a"></i>volume/delta buy</span>
+        <span><i class="sw" style="background:#ef5350"></i>volume/delta sell</span>
+        <span><i class="sw" style="background:#d1d4dc"></i>CVD (cumulative delta)</span>
+        <span><i class="sw" style="background:#3b82f6"></i>shorts liquidated ↑</span>
+        <span><i class="sw" style="background:#d97706"></i>longs liquidated ↓</span>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="card signal-card">
+        <div class="card-title">Signal <span class="hint" title="Confluence score: the share of weighted factors that agree on a direction. It is a probability aid, NOT a guarantee — no tool can promise 90% accuracy.">ⓘ</span></div>
+        <div class="sig-row">
+          <span id="sigDirection" class="sig-direction wait">WAIT</span>
+          <div class="sig-conf">
+            <div class="conf-top"><span>confluence</span><b id="sigConfidence">0%</b></div>
+            <div class="conf-track"><div id="sigConfBar" class="conf-fill fill-wait"></div></div>
+          </div>
+        </div>
+        <div id="sigLevels" class="sig-levels"></div>
+        <div class="card-subtitle">Why (weighted factors)</div>
+        <div id="sigFactors" class="sig-factors"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Liquidations <span class="muted">(live, since page open)</span></div>
+        <div class="liq-row">
+          <div class="liq-side">
+            <span class="liq-label long">Longs rekt</span>
+            <b id="liq-long" class="liq-val long">$0</b>
+          </div>
+          <div class="liq-side right">
+            <span class="liq-label short">Shorts rekt</span>
+            <b id="liq-short" class="liq-val short">$0</b>
+          </div>
+        </div>
+        <div class="liq-track"><div id="liq-bar-long" class="liq-fill"></div></div>
+      </div>
+
+      <div class="card feed-card">
+        <div class="card-title">Live reasoning</div>
+        <div id="feed" class="feed"></div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    Analytical tool for education — <b>not financial advice</b>. Signals are confluence-based probabilities, never certainties.
+    Data: Binance USDT-M Futures (public API). Liquidation history starts when you open the page.
+  </footer>
+
+  <script src="js/vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/analysis.js"></script>
+  <script src="js/signals.js"></script>
+  <script src="js/reasoning.js"></script>
+  <script src="js/chart.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
