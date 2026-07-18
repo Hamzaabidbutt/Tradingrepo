@@ -45,12 +45,32 @@
     feed.on('forceOrder', onForceOrder);
     feed.on('status', onStatus);
 
+    const bt = $('#buildTag');
+    if (bt) bt.textContent = 'v' + CFG.VERSION;
+
     await loadSymbol();
     if (!state.demo) feed.connect();
     setInterval(refreshStats, 60000);
     setInterval(renderCountdown, 1000);
     setInterval(flushDirtyCandle, 250);
     setInterval(wsWatchdog, 4000);
+    checkForUpdate();
+    setInterval(checkForUpdate, 60000);
+  }
+
+  // ---- auto-update: if a newer deploy exists, reload with a cache-busting
+  // URL so stale CDN/browser caches can never pin users to an old build ----
+  let reloadedForUpdate = false;
+  async function checkForUpdate() {
+    if (reloadedForUpdate) return;
+    try {
+      const res = await fetch('version.json?ts=' + Date.now(), { cache: 'no-store' });
+      const v = (await res.json()).version;
+      if (typeof v === 'number' && v > CFG.VERSION) {
+        reloadedForUpdate = true;
+        window.location.replace(window.location.pathname + '?_v=' + v);
+      }
+    } catch (e) { /* offline or blocked — ignore */ }
   }
 
   function symMeta() { return CFG.SYMBOLS.find((s) => s.id === state.symbol); }
@@ -119,6 +139,7 @@
   // ---------- feed handlers ----------
   function onKline({ symbol, interval, candle }) {
     if (symbol !== state.symbol || interval !== state.tf) return;
+    lastDataAt = Date.now();
     const last = state.candles[state.candles.length - 1];
     if (candle.closed) {
       if (last && last.time === candle.time) state.candles[state.candles.length - 1] = candle;
@@ -144,6 +165,7 @@
 
   function onAggTrade(t) {
     if (t.symbol !== state.symbol) return;
+    lastDataAt = Date.now();
     rollDelta(t);
     trackBigOrder(t);
     updatePriceHeader(t.price); // tick-by-tick price, faster than kline pushes
@@ -185,7 +207,8 @@
     candleDirty = null;
   }
 
-  // ---- candle-close countdown ----
+  // ---- candle-close countdown + data-freshness readout ----
+  let lastDataAt = Date.now(); // any kline/trade for the active symbol
   function renderCountdown() {
     const el = $('#countdown');
     if (!el) return;
@@ -194,7 +217,9 @@
     const last = state.liveCandle || state.candles[state.candles.length - 1];
     const closeAt = last ? last.time + step : (Math.floor(now / step) + 1) * step;
     const remaining = Math.max(0, closeAt - now);
-    el.textContent = `${state.tf} candle closes in ${fmtDur(remaining)}`;
+    const age = (Date.now() - lastDataAt) / 1000;
+    const ageTxt = age < 2 ? 'live' : `${age.toFixed(0)}s ago`;
+    el.innerHTML = `${state.tf} candle closes in ${fmtDur(remaining)} · <span class="${age < 5 ? 'pos' : 'neg'}">data: ${ageTxt}</span>`;
   }
 
   function fmtDur(s) {
@@ -214,7 +239,7 @@
     if (state.demo) return;
     const stale = Date.now() - lastWsKline > 8000;
     if (stale && !pollTimer) {
-      pollTimer = setInterval(pollKlines, 2500);
+      pollTimer = setInterval(pollKlines, 1500);
       setStatus('live', 'LIVE · POLLING');
     } else if (!stale && pollTimer) {
       clearInterval(pollTimer);

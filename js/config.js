@@ -1,5 +1,6 @@
 // Global configuration for the dashboard.
 window.CFG = {
+  VERSION: 6,
   SYMBOLS: [
     { id: 'UNIUSDT', base: 'UNI', name: 'Uniswap', pricePrecision: 4, sample: 9.2 },
     { id: 'ORDIUSDT', base: 'ORDI', name: 'Ordinals', pricePrecision: 3, sample: 11.5 },
