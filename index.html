@@ -6,7 +6,7 @@
   <title>FlowSight — UNI &amp; ORDI Smart-Money Dashboard</title>
   <meta name="description" content="Live smart-money analysis for UNIUSDT and ORDIUSDT: liquidity hunts, order blocks, FVGs, CHoCH/BOS, delta volume and liquidations with plain-language reasoning." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
-  <link rel="stylesheet" href="css/style.css?v=6" />
+  <link rel="stylesheet" href="css/style.css?v=7" />
 </head>
 <body>
   <div id="errBanner" class="err-banner hidden"></div>
@@ -39,11 +39,12 @@
     <div class="stat"><span class="stat-label">1-min delta</span><span id="stat-delta1m" class="stat-value">—</span></div>
     <div class="stat stat-layers">
       <label><input type="checkbox" data-layer="zones" checked> OB / FVG</label>
-      <label><input type="checkbox" data-layer="liquidity" checked> Liquidity</label>
-      <label><input type="checkbox" data-layer="markers" checked> Markers</label>
-      <label><input type="checkbox" data-layer="fib" checked> Fibonacci</label>
-      <label><input type="checkbox" data-layer="sr" checked> S/R</label>
-      <label><input type="checkbox" data-layer="levels" checked> Entry/Exit</label>
+      <label><input type="checkbox" data-layer="liquidity"> Liquidity</label>
+      <label><input type="checkbox" data-layer="markers"> Markers</label>
+      <label><input type="checkbox" data-layer="fib"> Fibonacci</label>
+      <label><input type="checkbox" data-layer="sr"> S/R</label>
+      <label><input type="checkbox" data-layer="levels"> Entry/Exit</label>
+      <label><input type="checkbox" data-layer="sessions" checked> Sessions</label>
     </div>
   </div>
 
@@ -70,23 +71,28 @@
       </div>
 
       <div class="card">
-        <div class="card-title">Liquidations <span class="muted">(live, since page open)</span></div>
-        <div class="liq-row">
-          <div class="liq-side">
-            <span class="liq-label long">Longs rekt</span>
-            <b id="liq-long" class="liq-val long">$0</b>
-          </div>
-          <div class="liq-side right">
-            <span class="liq-label short">Shorts rekt</span>
-            <b id="liq-short" class="liq-val short">$0</b>
-          </div>
-        </div>
-        <div class="liq-track"><div id="liq-bar-long" class="liq-fill"></div></div>
+        <div class="card-title">🧠 AI Intelligence Engine <span class="muted">live · <span id="aiStamp">—</span></span></div>
+        <div id="knowledge" class="knowledge"></div>
       </div>
 
       <div class="card">
-        <div class="card-title">Market knowledge <span class="muted">(auto-updating)</span></div>
-        <div id="knowledge" class="knowledge"></div>
+        <div class="card-title">Order flow</div>
+        <div id="orderflow" class="orderflow"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Liquidation engine <span class="muted">(since page open)</span></div>
+        <div id="liqEngine"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🐋 Whale detector</div>
+        <div id="whales"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Trading sessions</div>
+        <div id="sessions"></div>
       </div>
 
       <div class="card feed-card">
@@ -101,13 +107,14 @@
     Data: Binance USDT-M Futures (public API). Liquidation history starts when you open the page.
   </footer>
 
-  <script src="js/vendor/lightweight-charts.standalone.production.js?v=6"></script>
-  <script src="js/config.js?v=6"></script>
-  <script src="js/data.js?v=6"></script>
-  <script src="js/analysis.js?v=6"></script>
-  <script src="js/signals.js?v=6"></script>
-  <script src="js/reasoning.js?v=6"></script>
-  <script src="js/chart.js?v=6"></script>
-  <script src="js/app.js?v=6"></script>
+  <script src="js/vendor/lightweight-charts.standalone.production.js?v=7"></script>
+  <script src="js/config.js?v=7"></script>
+  <script src="js/engines.js?v=7"></script>
+  <script src="js/data.js?v=7"></script>
+  <script src="js/analysis.js?v=7"></script>
+  <script src="js/signals.js?v=7"></script>
+  <script src="js/reasoning.js?v=7"></script>
+  <script src="js/chart.js?v=7"></script>
+  <script src="js/app.js?v=7"></script>
 </body>
 </html>

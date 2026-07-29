@@ -1,6 +1,6 @@
 // Global configuration for the dashboard.
 window.CFG = {
-  VERSION: 6,
+  VERSION: 7,
   SYMBOLS: [
     { id: 'UNIUSDT', base: 'UNI', name: 'Uniswap', pricePrecision: 4, sample: 9.2 },
     { id: 'ORDIUSDT', base: 'ORDI', name: 'Ordinals', pricePrecision: 3, sample: 11.5 },
@@ -71,9 +71,19 @@ window.CFG = {
     entry: '#3b82f6',
     stop: '#ef5350',
     target: '#26a69a',
-    surface: '#131722',
-    grid: '#1e2430',
-    ink: '#d1d4dc',
+    surface: '#000000',
+    grid: '#141414',
+    ink: '#e6e8ee',
     inkMuted: '#8b93a7',
+    sessionAsia: 'rgba(59,130,246,0.05)',
+    sessionLondon: 'rgba(217,119,6,0.05)',
+    sessionNY: 'rgba(38,166,154,0.05)',
   },
+
+  // Trading sessions in UTC hours [start, end)
+  SESSIONS: [
+    { id: 'asia', name: 'Asia', short: 'ASIA', start: 0, end: 8, emoji: '🌏' },
+    { id: 'london', name: 'London', short: 'LDN', start: 7, end: 16, emoji: '🇬🇧' },
+    { id: 'ny', name: 'New York', short: 'NY', start: 12, end: 21, emoji: '🗽' },
+  ],
 };

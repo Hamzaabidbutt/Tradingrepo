@@ -5,11 +5,11 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --surface: #131722;
-  --surface-2: #171c28;
-  --surface-3: #1c2230;
-  --border: #232a3a;
-  --ink: #d1d4dc;
+  --surface: #000000;
+  --surface-2: #070709;
+  --surface-3: #101014;
+  --border: #1b1b20;
+  --ink: #e6e8ee;
   --ink-muted: #8b93a7;
   --up: #26a69a;
   --down: #ef5350;
@@ -182,7 +182,7 @@ body {
   gap: 12px;
   font-size: 11px;
   color: var(--ink-muted);
-  background: rgba(19, 23, 34, 0.78);
+  background: rgba(0, 0, 0, 0.82);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 3px 10px;
@@ -199,7 +199,7 @@ body {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
-  background: rgba(19, 23, 34, 0.78);
+  background: rgba(0, 0, 0, 0.82);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 3px 10px;
@@ -372,3 +372,88 @@ body {
   .sig-direction { font-size: 22px; min-width: 78px; }
   .feed { max-height: 300px; }
 }
+
+/* ---------- order flow engine ---------- */
+.orderflow { display: flex; flex-direction: column; gap: 12px; }
+.gauges { display: flex; gap: 10px; justify-content: space-around; }
+.gauge { position: relative; display: flex; align-items: center; gap: 8px; flex: 1; }
+.gauge-svg { width: 58px; height: 58px; transform: rotate(-90deg); flex-shrink: 0; }
+.gauge-track { fill: none; stroke: var(--surface-3); stroke-width: 6; }
+.gauge-fill { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dasharray 0.4s; }
+.gauge-val {
+  position: absolute;
+  left: 29px;
+  transform: translateX(-50%);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.gauge-label { font-size: 11px; color: var(--ink-muted); line-height: 1.2; }
+
+.of-sparkhead { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; color: var(--ink-muted); }
+.of-sparkhead b { font-size: 11px; font-variant-numeric: tabular-nums; }
+.of-spark {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 46px;
+  background: var(--surface-3);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.ofb { flex: 1; min-width: 3px; border-radius: 2px; }
+.ofb.up { background: var(--up); }
+.ofb.down { background: var(--down); }
+
+.of-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.of-grid.tight { gap: 6px; }
+.of-cell {
+  background: var(--surface-3);
+  border-radius: 8px;
+  padding: 7px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.of-cell span { font-size: 10px; color: var(--ink-muted); }
+.of-cell b { font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* liquidation engine */
+.cascade-alert {
+  background: rgba(217, 119, 6, 0.16);
+  color: #e8963a;
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  text-align: center;
+}
+.long-c { color: var(--long-liq); }
+.short-c { color: var(--short-liq); }
+
+/* whale detector */
+.whale-list { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; max-height: 170px; overflow-y: auto; }
+
+/* trading sessions */
+.sess-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.sess-chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--ink-muted);
+  border: 1px solid transparent;
+}
+.sess-chip.on { color: var(--ink); font-weight: 600; }
+.sess-chip.asia.on { border-color: var(--short-liq); background: rgba(59, 130, 246, 0.14); }
+.sess-chip.london.on { border-color: var(--long-liq); background: rgba(217, 119, 6, 0.14); }
+.sess-chip.ny.on { border-color: var(--up); background: rgba(38, 166, 154, 0.14); }
+.sess-meta { display: flex; justify-content: space-between; font-size: 10px; color: var(--ink-muted); margin-top: 8px; }
+
+/* AI intelligence tones */
+.k-title.pos { color: var(--up); }
+.k-title.neg { color: var(--down); }
+.k-title.warn { color: var(--long-liq); }
+.k-title.neutral { color: var(--accent); }

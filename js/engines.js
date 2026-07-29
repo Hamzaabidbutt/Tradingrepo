@@ -1,0 +1,339 @@
+// Real-time engines: order flow, liquidations, whale detection, trading
+// sessions, and the AI intelligence narrator. All pure-ish state machines
+// fed by the live feed; rendering lives in app.js.
+(function (global) {
+  const CFG = (typeof window !== 'undefined' ? window.CFG : global.CFG);
+
+  // ================= ORDER FLOW ENGINE =================
+  // Tracks aggressive buy vs sell flow on the forming bar and over a
+  // rolling window, producing pressure %, aggression rating and CVD.
+  class OrderFlowEngine {
+    constructor() { this.reset(); }
+
+    reset() {
+      this.barBuy = 0;
+      this.barSell = 0;
+      this.barTime = 0;
+      this.window = [];      // recent trades for short-term pressure
+      this.deltaBars = [];   // [{time, delta}] closed bars for the sparkline
+      this.cvd = 0;
+      this.avgBarVol = 0;
+      this.barsSeen = 0;
+      this.largestTrade = 0;
+    }
+
+    // Called for every trade — maintains the rolling pressure window and CVD.
+    // Per-bar buy/sell totals come from the candle itself (see setBar) so they
+    // include volume that traded before the page was opened.
+    onTrade(t) {
+      const notional = t.qty * t.price;
+      if (t.side === 'buy') this.cvd += notional; else this.cvd -= notional;
+      this.largestTrade = Math.max(this.largestTrade, notional);
+      const now = t.time || Date.now();
+      this.window.push({ time: now, side: t.side, notional });
+      const cutoff = now - 60000;
+      while (this.window.length && this.window[0].time < cutoff) this.window.shift();
+    }
+
+    // Authoritative per-bar split from the live candle: total notional and
+    // delta give exact aggressive buy vs sell volume for the whole bar.
+    setBar(candle) {
+      const total = candle.volume * candle.close;
+      const delta = candle.delta * candle.close;
+      if (candle.time !== this.barTime) {
+        if (this.barTime) this._closeBar();
+        this.barTime = candle.time;
+      }
+      this.barBuy = Math.max(0, (total + delta) / 2);
+      this.barSell = Math.max(0, (total - delta) / 2);
+    }
+
+    _closeBar() {
+      const total = this.barBuy + this.barSell;
+      this.deltaBars.push({ time: this.barTime, delta: this.barBuy - this.barSell, volume: total });
+      if (this.deltaBars.length > 40) this.deltaBars.shift();
+      this.barsSeen++;
+      this.avgBarVol += (total - this.avgBarVol) / Math.min(this.barsSeen, 20);
+    }
+
+    // Seed from historical candles so the panel is meaningful immediately.
+    seed(candles) {
+      this.deltaBars = candles.slice(-40).map((c) => ({ time: c.time, delta: c.delta * c.close, volume: c.volume * c.close }));
+      const vols = candles.slice(-20).map((c) => c.volume * c.close);
+      this.avgBarVol = vols.length ? vols.reduce((a, b) => a + b, 0) / vols.length : 0;
+      this.barsSeen = vols.length;
+      this.cvd = candles.slice(-100).reduce((s, c) => s + c.delta * c.close, 0);
+    }
+
+    // barProgress (0..1) lets relative volume measure PACE rather than the
+    // raw total, so a fresh bar isn't reported as "no volume".
+    snapshot(barProgress) {
+      const barTotal = this.barBuy + this.barSell;
+      const buyPct = barTotal ? Math.round((this.barBuy / barTotal) * 100) : 50;
+      let wBuy = 0, wSell = 0;
+      for (const t of this.window) { if (t.side === 'buy') wBuy += t.notional; else wSell += t.notional; }
+      const wTotal = wBuy + wSell;
+      const skew = wTotal ? (wBuy - wSell) / wTotal : 0;
+      const prog = Math.min(1, Math.max(0.08, barProgress || 1));
+      const relVolume = this.avgBarVol ? (barTotal / prog) / this.avgBarVol : 0; // pace vs average bar
+      const absSkew = Math.abs(skew);
+      let aggression = 'Balanced';
+      if (absSkew > 0.35) aggression = skew > 0 ? 'Strong buying' : 'Strong selling';
+      else if (absSkew > 0.15) aggression = skew > 0 ? 'Buyers active' : 'Sellers active';
+      return {
+        buyPct, sellPct: 100 - buyPct,
+        barBuy: this.barBuy, barSell: this.barSell,
+        delta: this.barBuy - this.barSell,
+        cvd: this.cvd,
+        relVolume, aggression, skew,
+        deltaBars: this.deltaBars.slice(-24),
+        minuteBuy: wBuy, minuteSell: wSell,
+      };
+    }
+  }
+
+  // ================= LIQUIDATION ENGINE =================
+  // Aggregates forced orders: totals, rate, cascade detection, biggest hit.
+  class LiquidationEngine {
+    constructor() { this.reset(); }
+
+    reset() {
+      this.long = 0;
+      this.short = 0;
+      this.events = [];   // recent {time, side, notional, price}
+      this.biggest = null;
+      this.bars = new Map();
+    }
+
+    onLiquidation(o, bucketSeconds) {
+      this[o.liquidated] += o.notional;
+      this.events.push({ time: o.time || Date.now(), side: o.liquidated, notional: o.notional, price: o.price });
+      if (this.events.length > 300) this.events.shift();
+      if (!this.biggest || o.notional > this.biggest.notional) {
+        this.biggest = { side: o.liquidated, notional: o.notional, price: o.price, time: o.time || Date.now() };
+      }
+      const bucket = Math.floor((o.time || Date.now()) / 1000 / bucketSeconds) * bucketSeconds;
+      const bar = this.bars.get(bucket) || { time: bucket, long: 0, short: 0 };
+      bar[o.liquidated] += o.notional;
+      this.bars.set(bucket, bar);
+      return bar;
+    }
+
+    snapshot() {
+      const now = Date.now();
+      const recent = this.events.filter((e) => now - e.time < 300000); // 5 min
+      let rLong = 0, rShort = 0;
+      for (const e of recent) { if (e.side === 'long') rLong += e.notional; else rShort += e.notional; }
+      const perMin = recent.length ? (rLong + rShort) / 5 : 0;
+      // cascade: a burst of liquidations on one side inside 60s
+      const lastMin = this.events.filter((e) => now - e.time < 60000);
+      let mLong = 0, mShort = 0;
+      for (const e of lastMin) { if (e.side === 'long') mLong += e.notional; else mShort += e.notional; }
+      const dominant = mLong > mShort ? 'long' : 'short';
+      const domShare = (mLong + mShort) ? Math.max(mLong, mShort) / (mLong + mShort) : 0;
+      const cascade = lastMin.length >= 5 && domShare > 0.7;
+      return {
+        long: this.long, short: this.short,
+        recentLong: rLong, recentShort: rShort,
+        minuteLong: mLong, minuteShort: mShort,
+        perMin, cascade, cascadeSide: dominant,
+        biggest: this.biggest,
+        count: this.events.length,
+      };
+    }
+  }
+
+  // ================= WHALE DETECTOR =================
+  // Flags outsized market orders relative to the running average trade size.
+  class WhaleDetector {
+    constructor(demo) { this.demo = !!demo; this.reset(); }
+
+    reset() {
+      this.avg = 0;
+      this.n = 0;
+      this.orders = [];
+      this.buyNotional = 0;
+      this.sellNotional = 0;
+    }
+
+    onTrade(t) {
+      const notional = t.qty * t.price;
+      this.n++;
+      this.avg += (notional - this.avg) / Math.min(this.n, 500);
+      const floor = this.demo ? 300 : 25000;
+      const threshold = Math.max(floor, this.avg * 20);
+      if (this.n > 40 && notional >= threshold) {
+        const o = { side: t.side, notional, price: t.price, time: t.time || Date.now(), ratio: this.avg ? notional / this.avg : 0 };
+        this.orders.push(o);
+        if (this.orders.length > 40) this.orders.shift();
+        if (t.side === 'buy') this.buyNotional += notional; else this.sellNotional += notional;
+        return o;
+      }
+      return null;
+    }
+
+    snapshot() {
+      const now = Date.now();
+      const recent = this.orders.filter((o) => now - o.time < 900000); // 15 min
+      let b = 0, s = 0;
+      for (const o of recent) { if (o.side === 'buy') b += o.notional; else s += o.notional; }
+      const total = b + s;
+      return {
+        recent: recent.slice(-8).reverse(),
+        buyNotional: b, sellNotional: s,
+        bias: total ? (b - s) / total : 0,
+        count: recent.length,
+        threshold: Math.max(this.demo ? 300 : 25000, this.avg * 20),
+      };
+    }
+  }
+
+  // ================= TRADING SESSIONS =================
+  function activeSessions(date) {
+    const h = (date || new Date()).getUTCHours() + (date || new Date()).getUTCMinutes() / 60;
+    return CFG.SESSIONS.filter((s) => h >= s.start && h < s.end);
+  }
+
+  function sessionInfo(date) {
+    const d = date || new Date();
+    const h = d.getUTCHours() + d.getUTCMinutes() / 60;
+    const active = activeSessions(d);
+    // next session boundary
+    let next = null, minDelta = Infinity;
+    for (const s of CFG.SESSIONS) {
+      const delta = (s.start - h + 24) % 24;
+      if (delta > 0 && delta < minDelta) { minDelta = delta; next = s; }
+    }
+    const overlap = active.length > 1;
+    return {
+      active,
+      names: active.map((s) => s.name),
+      label: active.length ? active.map((s) => s.short).join(' + ') : 'Off-hours',
+      overlap,
+      next,
+      nextInMinutes: next ? Math.round(minDelta * 60) : null,
+      note: overlap
+        ? `${active.map((s) => s.name).join(' / ')} overlap — historically the highest-volume, most volatile window.`
+        : active.length
+          ? `${active[0].name} session — ${active[0].id === 'asia' ? 'typically ranging, lower volume; ranges set here often get swept later.' : active[0].id === 'london' ? 'high volume, frequent stop-hunts of the Asian range.' : 'US flow, strong trends and the biggest liquidation cascades.'}`
+          : 'Between sessions — thin liquidity, moves can be erratic and less reliable.',
+    };
+  }
+
+  // ================= AI INTELLIGENCE NARRATOR =================
+  // Composes a live, timeframe-aware market read from every engine.
+  function intelligence(ctx) {
+    const { analysis, candles, tf, flow, liq, whales, session, symbol, signal, price, pricePrecision } = ctx;
+    if (!analysis || !candles || !candles.length) return [];
+    const px = (v) => (typeof v === 'number' ? v.toFixed(pricePrecision) : v);
+    const S = window.Signals;
+    const out = [];
+    const lastIdx = candles.length - 1;
+
+    // --- headline read ---
+    const trend = analysis.structure.trend;
+    const conf = signal ? signal.confidence : 0;
+    const bias = signal && signal.direction !== 'WAIT' ? signal.direction : 'NEUTRAL';
+    out.push({
+      k: 'Read',
+      v: `On the ${tf} timeframe ${symbol} is ${trend === 'up' ? 'trending up' : trend === 'down' ? 'trending down' : 'ranging'} with a ${bias} bias at ${conf}% confluence. Price ${px(price)}.`,
+      tone: bias === 'LONG' ? 'pos' : bias === 'SHORT' ? 'neg' : 'neutral',
+    });
+
+    // --- order flow read ---
+    if (flow) {
+      const rv = flow.relVolume;
+      const volWord = rv > 1.5 ? 'well above average' : rv > 1.05 ? 'above average' : rv > 0.6 ? 'about average' : 'below average';
+      out.push({
+        k: 'Order flow',
+        v: `${flow.aggression} — buyers ${flow.buyPct}% vs sellers ${flow.sellPct}% on this bar, volume ${volWord} (${rv.toFixed(2)}×). Bar delta ${S.fmtUsd(flow.delta)} ${flow.delta >= 0 ? 'net buying' : 'net selling'}.`,
+        tone: flow.skew > 0.1 ? 'pos' : flow.skew < -0.1 ? 'neg' : 'neutral',
+      });
+    }
+
+    // --- why volume changed ---
+    const vAvg = analysis.lastVolSMA;
+    const recentV = candles.slice(-3).reduce((s, c) => s + c.volume, 0) / 3;
+    const ratio = vAvg ? recentV / vAvg : 1;
+    const sweep = analysis.liquidity.sweeps[analysis.liquidity.sweeps.length - 1];
+    const lastEv = analysis.structure.events[analysis.structure.events.length - 1];
+    let why;
+    if (ratio > 1.4) {
+      why = `Volume is pumping (${ratio.toFixed(1)}× average). `;
+      if (sweep && lastIdx - sweep.idx <= 5) why += `Cause: a stop-hunt ${sweep.dir === 'low' ? 'below' : 'above'} ${px(sweep.level)} forcing traders out.`;
+      else if (liq && liq.cascade) why += `Cause: a liquidation cascade — ${liq.cascadeSide}s being force-closed.`;
+      else if (lastEv && lastIdx - lastEv.idx <= 5) why += `Cause: breakout participation after the ${lastEv.kind}.`;
+      else why += 'No clear structural cause — likely news or a large player working an order.';
+    } else if (ratio < 0.7) {
+      why = `Volume is drying up (${ratio.toFixed(1)}× average) — moves are less reliable here; wait for volume to return before trusting a breakout.`;
+    } else {
+      why = `Volume is normal (${ratio.toFixed(1)}× average), no unusual participation.`;
+    }
+    out.push({ k: 'Volume', v: why, tone: ratio > 1.4 ? 'warn' : 'neutral' });
+
+    // --- accumulation / distribution ---
+    out.push({ k: 'Phase', v: `${cap(analysis.phase.phase)} — ${analysis.phase.note}.`, tone: /accum|markup|weak selloff/.test(analysis.phase.phase) ? 'pos' : /distrib|markdown|weak rally/.test(analysis.phase.phase) ? 'neg' : 'neutral' });
+
+    // --- liquidations ---
+    if (liq && (liq.long + liq.short) > 0) {
+      const side = liq.minuteLong > liq.minuteShort ? 'longs' : 'shorts';
+      out.push({
+        k: 'Liquidations',
+        v: liq.cascade
+          ? `⚠ Cascade in progress — ${liq.cascadeSide}s getting wiped out (${S.fmtUsd(liq.minuteLong + liq.minuteShort)} in 60s). These flushes often mark short-term ${liq.cascadeSide === 'long' ? 'bottoms' : 'tops'}.`
+          : `${S.fmtUsd(liq.long)} longs vs ${S.fmtUsd(liq.short)} shorts liquidated since open, ~${S.fmtUsd(liq.perMin)}/min. Recent pressure on ${side}.`,
+        tone: liq.cascade ? 'warn' : 'neutral',
+      });
+    }
+
+    // --- whales ---
+    if (whales && whales.count) {
+      const b = whales.bias;
+      out.push({
+        k: 'Whales',
+        v: `${whales.count} large orders in 15m — ${S.fmtUsd(whales.buyNotional)} buying vs ${S.fmtUsd(whales.sellNotional)} selling. ${Math.abs(b) < 0.15 ? 'Big players are two-way, no clear side.' : b > 0 ? 'Big money is leaning long.' : 'Big money is leaning short.'}`,
+        tone: Math.abs(b) < 0.15 ? 'neutral' : b > 0 ? 'pos' : 'neg',
+      });
+    }
+
+    // --- key areas ---
+    if (analysis.profile) {
+      out.push({
+        k: 'Key areas',
+        v: `Heaviest buying near ${px(analysis.profile.buyArea)}, heaviest selling near ${px(analysis.profile.sellArea)}, most-traded price ${px(analysis.profile.poc)}. Expect reactions on revisit.`,
+        tone: 'neutral',
+      });
+    }
+
+    // --- session context ---
+    if (session) {
+      out.push({
+        k: 'Session',
+        v: `${session.label} — ${session.note}${session.next ? ` Next: ${session.next.name} opens in ${fmtMins(session.nextInMinutes)}.` : ''}`,
+        tone: session.overlap ? 'warn' : 'neutral',
+      });
+    }
+
+    // --- what to watch ---
+    const watch = [];
+    if (analysis.doublePattern) watch.push(`${analysis.doublePattern.type === 'double-top' ? 'double top' : 'double bottom'} at ${px(analysis.doublePattern.level)} (~${analysis.doublePattern.breakChance}% break odds)`);
+    const ob = analysis.orderBlocks[analysis.orderBlocks.length - 1];
+    if (ob) watch.push(`${ob.dir === 'up' ? 'demand' : 'supply'} block ${px(ob.bottom)}–${px(ob.top)}`);
+    const pool = analysis.liquidity.pools[0];
+    if (pool) watch.push(`untapped liquidity at ${px(pool.price)}`);
+    if (watch.length) out.push({ k: 'Watching', v: `Key levels: ${watch.join(' · ')}.`, tone: 'neutral' });
+
+    return out;
+  }
+
+  function cap(s) { return String(s).charAt(0).toUpperCase() + String(s).slice(1); }
+  function fmtMins(m) {
+    if (m == null) return '';
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h ? `${h}h ${mm}m` : `${mm}m`;
+  }
+
+  const api = { OrderFlowEngine, LiquidationEngine, WhaleDetector, activeSessions, sessionInfo, intelligence };
+  if (typeof window !== 'undefined') window.Engines = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);

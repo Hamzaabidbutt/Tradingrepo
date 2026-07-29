@@ -4,6 +4,10 @@
 (function () {
   const LWC = window.LightweightCharts;
   const C = window.CFG.COLORS;
+  const C_SESSIONS = window.CFG.SESSIONS.map((s) => ({
+    ...s,
+    color: s.id === 'asia' ? C.sessionAsia : s.id === 'london' ? C.sessionLondon : C.sessionNY,
+  }));
 
   // ----- custom primitive: translucent zone rectangles extending right -----
   class ZonesPrimitive {
@@ -193,6 +197,53 @@
     }
   }
 
+  // ----- custom primitive: trading-session background bands -----
+  class SessionsPrimitive {
+    constructor() {
+      this.bands = []; // {from, to, color, label}
+      this._chart = null;
+      this._requestUpdate = null;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return { draw(target) { target.useBitmapCoordinateSpace((scope) => self._draw(scope)); } };
+        },
+        zOrder() { return 'bottom'; },
+      };
+    }
+    attached({ chart, requestUpdate }) { this._chart = chart; this._requestUpdate = requestUpdate; }
+    detached() { this._chart = null; }
+    paneViews() { return [this._paneView]; }
+    setBands(bands) { this.bands = bands || []; if (this._requestUpdate) this._requestUpdate(); }
+
+    _draw(scope) {
+      if (!this._chart || !this.bands.length) return;
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const ts = this._chart.timeScale();
+      const range = ts.getVisibleRange();
+      if (!range) return;
+      const h = scope.bitmapSize.height;
+      ctx.save();
+      ctx.font = `600 ${Math.round(9 * vr)}px 'Inter', sans-serif`;
+      for (const b of this.bands) {
+        if (b.to < range.from || b.from > range.to) continue;
+        let x1 = ts.timeToCoordinate(Math.max(b.from, range.from));
+        let x2 = ts.timeToCoordinate(Math.min(b.to, range.to));
+        if (x1 === null || x2 === null || x2 <= x1) continue;
+        const bx = Math.round(x1 * hr), bw = Math.round((x2 - x1) * hr);
+        ctx.fillStyle = b.color;
+        ctx.fillRect(bx, 0, bw, h);
+        if (bw > 40 * hr && b.label) {
+          ctx.fillStyle = 'rgba(139,147,167,0.75)';
+          ctx.fillText(b.label, bx + 5 * hr, h - 6 * vr);
+        }
+      }
+      ctx.restore();
+    }
+  }
+
   // ----- custom primitive: a name label written on the pane (top-left) -----
   class PaneLabelPrimitive {
     constructor(text) {
@@ -228,7 +279,8 @@
       this.pricePrecision = pricePrecision;
       this.priceLines = [];
       this.poolLines = [];
-      this.layers = { zones: true, markers: true, liquidity: true, levels: true, fib: true, sr: true };
+      // Only OB/FVG on by default — a clean chart on open; the rest are opt-in.
+      this.layers = { zones: true, markers: false, liquidity: false, levels: false, fib: false, sr: false, sessions: true };
       this._srLevels = [];
       this._lastAnalysis = null;
       this._lastSignal = null;
@@ -276,6 +328,8 @@
       this.candles.attachPrimitive(this.fibPrimitive);
       this.srPrimitive = new SRPrimitive();
       this.candles.attachPrimitive(this.srPrimitive);
+      this.sessionsPrimitive = new SessionsPrimitive();
+      this.candles.attachPrimitive(this.sessionsPrimitive);
       this.priceLabel = new PaneLabelPrimitive('PRICE · Smart-money structures (OB · FVG · liquidity · fib)');
       this.candles.attachPrimitive(this.priceLabel);
       this.markers = LWC.createSeriesMarkers(this.candles, []);
@@ -415,9 +469,31 @@
       this.srPrimitive.setLevels(this.layers.sr ? this._srLevels : []);
     }
 
+    // Build one band per session per day covered by the visible candles.
+    setSessions(candles, tf) {
+      this._sessionCandles = candles;
+      this._sessionTf = tf;
+      if (!this.layers.sessions || !candles.length || window.intervalSeconds(tf) > 14400) {
+        this.sessionsPrimitive.setBands([]);
+        return;
+      }
+      const first = candles[0].time, last = candles[candles.length - 1].time;
+      const bands = [];
+      const dayStart = Math.floor(first / 86400) * 86400;
+      for (let d = dayStart; d <= last + 86400; d += 86400) {
+        for (const s of C_SESSIONS) {
+          const from = d + s.start * 3600, to = d + s.end * 3600;
+          if (to < first || from > last) continue;
+          bands.push({ from, to, color: s.color, label: s.short });
+        }
+      }
+      this.sessionsPrimitive.setBands(bands);
+    }
+
     setLayer(name, on) {
       this.layers[name] = on;
       if (name === 'sr') { this.srPrimitive.setLevels(on ? this._srLevels : []); return; }
+      if (name === 'sessions') { this.setSessions(this._sessionCandles || [], this._sessionTf || '15m'); return; }
       if (this._lastAnalysis) this.applyAnalysis(this._lastAnalysis, this._lastSignal);
     }
 
@@ -522,14 +598,14 @@
       // --- entry / stop / targets + swing top/bottom + double pattern ---
       for (const l of this.priceLines) this.candles.removePriceLine(l);
       this.priceLines = [];
-      if (analysis && analysis.fib) {
+      if (this.layers.levels && analysis && analysis.fib) {
         const mkMeta = (price, title) => this.priceLines.push(this.candles.createPriceLine({
           price, color: C.inkMuted, lineWidth: 1, lineStyle: LWC.LineStyle.SparseDotted, axisLabelVisible: true, title,
         }));
         mkMeta(analysis.fib.high, 'TOP');
         mkMeta(analysis.fib.low, 'BOTTOM');
       }
-      if (analysis && analysis.doublePattern) {
+      if (this.layers.levels && analysis && analysis.doublePattern) {
         const dp = analysis.doublePattern;
         this.priceLines.push(this.candles.createPriceLine({
           price: dp.level,

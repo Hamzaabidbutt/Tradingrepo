@@ -17,6 +17,9 @@
 
   const feed = new window.Feed();
   const reasoning = new window.Reasoning($('#feed'));
+  const flowEngine = new window.Engines.OrderFlowEngine();
+  const liqEngine = new window.Engines.LiquidationEngine();
+  let whaleEngine = new window.Engines.WhaleDetector(false);
   let dash = null;
   let analysisResult = null;
   let signal = null;
@@ -54,6 +57,7 @@
     setInterval(renderCountdown, 1000);
     setInterval(flushDirtyCandle, 250);
     setInterval(wsWatchdog, 4000);
+    setInterval(renderEngines, 1000); // AI intelligence + order flow tick every second
     checkForUpdate();
     setInterval(checkForUpdate, 60000);
   }
@@ -98,8 +102,12 @@
     state.liveCandle = null;
     candleDirty = null;
     lastWsKline = Date.now(); // grace period before the polling fallback kicks in
-    bigOrders.avg = 0; bigOrders.n = 0; bigOrders.list = [];
+    flowEngine.reset();
+    whaleEngine = new window.Engines.WhaleDetector(state.demo);
+    flowEngine.seed(state.candles);
+    if (state.candles.length) flowEngine.setBar(state.candles[state.candles.length - 1]);
     dash.setHistory(state.candles, liqBarsFor(state.symbol));
+    dash.setSessions(state.candles, state.tf);
     feed.setKlineStream(state.symbol, state.tf);
     runAnalysis();
     refreshStats();
@@ -140,6 +148,7 @@
   function onKline({ symbol, interval, candle }) {
     if (symbol !== state.symbol || interval !== state.tf) return;
     lastDataAt = Date.now();
+    flowEngine.setBar(candle); // exact per-bar buy/sell split from the candle
     const last = state.candles[state.candles.length - 1];
     if (candle.closed) {
       if (last && last.time === candle.time) state.candles[state.candles.length - 1] = candle;
@@ -167,9 +176,10 @@
     if (t.symbol !== state.symbol) return;
     lastDataAt = Date.now();
     rollDelta(t);
-    trackBigOrder(t);
     updatePriceHeader(t.price); // tick-by-tick price, faster than kline pushes
     applyTradeToCandle(t);      // move the forming candle on every trade
+    flowEngine.onTrade(t);
+    if (whaleEngine.onTrade(t)) renderWhales();
   }
 
   // ---- tick-level candle movement ----
@@ -203,6 +213,7 @@
 
   function flushDirtyCandle() {
     if (!candleDirty || !dash) return;
+    flowEngine.setBar(candleDirty);
     dash.updateCandle({ ...candleDirty });
     candleDirty = null;
   }
@@ -259,20 +270,6 @@
     } catch (e) { /* transient — next poll retries */ }
   }
 
-  // ---- big orders (whale prints) ----
-  const bigOrders = { avg: 0, n: 0, list: [] };
-  function trackBigOrder(t) {
-    const notional = t.qty * t.price;
-    bigOrders.n++;
-    bigOrders.avg += (notional - bigOrders.avg) / Math.min(bigOrders.n, 500);
-    const threshold = Math.max(state.demo ? 400 : 15000, bigOrders.avg * 25);
-    if (bigOrders.n > 30 && notional >= threshold) {
-      bigOrders.list.push({ side: t.side, notional, price: t.price, time: Date.now() });
-      if (bigOrders.list.length > 6) bigOrders.list.shift();
-      renderKnowledge();
-    }
-  }
-
   const deltaWindow = [];
   function rollDelta(t) {
     const now = Date.now();
@@ -296,8 +293,11 @@
     const bar = rec.bars.get(bucket) || { time: bucket, long: 0, short: 0 };
     bar[o.liquidated] += o.notional;
     rec.bars.set(bucket, bar);
-    if (o.symbol === state.symbol) dash.updateLiquidationBar(bar);
-    updateLiqPanel();
+    if (o.symbol === state.symbol) {
+      dash.updateLiquidationBar(bar);
+      liqEngine.onLiquidation(o, step);
+      renderLiquidationEngine();
+    }
     // narrate meaningful bursts only
     burstTracker.add(o);
   }
@@ -351,96 +351,156 @@
     dash.applyAnalysis(analysisResult, signal);
     renderSignalCard();
     renderTrendBadge();
-    renderKnowledge();
+    renderEngines();
     applySR();
     reasoning.fromAnalysis(state.symbol, state.tf, state.candles, analysisResult);
   }
 
-  // ---- market knowledge panel ----
-  function renderKnowledge() {
-    const el = $('#knowledge');
-    if (!el || !analysisResult) return;
-    const a = analysisResult;
-    const S = window.Signals;
-    const candles = state.candles;
-    const lastIdx = candles.length - 1;
-    const last = candles[lastIdx];
-    const p = symMeta().pricePrecision;
-    const px = (v) => (typeof v === 'number' ? v.toFixed(p) : v);
-    const sections = [];
-
-    // 1. what's happening
-    const trend = a.structure.trend;
-    const lastEv = a.structure.events[a.structure.events.length - 1];
-    const sweep = a.liquidity.sweeps[a.liquidity.sweeps.length - 1];
-    let story = trend === 'up' ? 'Structure is bullish (higher highs and higher lows).'
-      : trend === 'down' ? 'Structure is bearish (lower highs and lower lows).'
-      : 'Price is ranging with no clear structure.';
-    if (lastEv && lastIdx - lastEv.idx <= 10) {
-      story += ` Most recent event: ${lastEv.kind} ${lastEv.dir} through ${px(lastEv.level)}${lastEv.kind === 'CHoCH' ? ' — an early reversal warning' : ' — trend confirmation'}.`;
-    }
-    if (sweep && lastIdx - sweep.idx <= 8) {
-      story += ` A liquidity hunt just ran stops ${sweep.dir === 'low' ? 'below' : 'above'} ${px(sweep.level)}.`;
-    }
-    sections.push(['What’s happening', story]);
-
-    // 2. volume: change + why
-    const vAvg = a.lastVolSMA;
-    const recentV = candles.slice(-3).reduce((s, c) => s + c.volume, 0) / 3;
-    const ratio = vAvg ? recentV / vAvg : 1;
-    const recentD = candles.slice(-3).reduce((s, c) => s + c.delta, 0);
-    let volTxt;
-    if (ratio > 1.4) volTxt = `Volume is pumping — ${ratio.toFixed(1)}× its average, dominated by ${recentD >= 0 ? 'aggressive buyers' : 'aggressive sellers'} (3-bar delta ${S.fmtQty(recentD)}).`;
-    else if (ratio < 0.7) volTxt = `Volume is drying up (${ratio.toFixed(1)}× average) — moves here are less reliable, watch for the next injection of volume.`;
-    else volTxt = `Volume is normal (${ratio.toFixed(1)}× average), net flow ${recentD >= 0 ? 'buy' : 'sell'}-side (${S.fmtQty(recentD)}).`;
-    if (ratio > 1.4) {
-      if (sweep && lastIdx - sweep.idx <= 5) volTxt += ' Likely cause: the stop-hunt flush forcing traders out.';
-      else if (lastEv && lastIdx - lastEv.idx <= 5) volTxt += ` Likely cause: breakout participation after the ${lastEv.kind}.`;
-      else volTxt += ' No obvious structural catalyst — possibly news-driven or a large player working an order.';
-    }
-    sections.push(['Volume', volTxt]);
-
-    // 3. phase: accumulation / distribution
-    sections.push(['Phase', `${cap(a.phase.phase)} — ${a.phase.note}.`]);
-
-    // 4. buying / selling areas (volume profile)
-    if (a.profile) {
-      sections.push(['Key areas', `Heaviest BUYING around ${px(a.profile.buyArea)} · heaviest SELLING around ${px(a.profile.sellArea)} · most traded price (POC) ${px(a.profile.poc)}. Expect reactions when price revisits these.`]);
-    }
-
-    // 5. double top / bottom
-    if (a.doublePattern) {
-      const dp = a.doublePattern;
-      sections.push([dp.type === 'double-top' ? 'Double top' : 'Double bottom',
-        `${dp.type === 'double-top' ? 'Double top' : 'Double bottom'} at ${px(dp.level)} (neckline ${px(dp.neckline)}). Estimated ~${dp.breakChance}% chance the level BREAKS: ${dp.reasons.join('; ')}.`]);
-    }
-
-    // 6. nearest S/R with strength
-    if (state.srNear && state.srNear.length) {
-      const res = state.srNear.filter((l) => l.kind === 'R')[0];
-      const sup = state.srNear.filter((l) => l.kind === 'S')[0];
-      const bits = [];
-      if (res) bits.push(`resistance ${px(res.price)} (${res.tf}, ${res.strength}, ${res.touches} touches)`);
-      if (sup) bits.push(`support ${px(sup.price)} (${sup.tf}, ${sup.strength}, ${sup.touches} touches)`);
-      if (bits.length) sections.push(['Nearest S/R', `Closest ${bits.join(' · ')}. Strength = how many times the level has been respected across hourly/daily/weekly/monthly charts.`]);
-    }
-
-    // 7. big orders
-    if (bigOrders.list.length) {
-      const rows = bigOrders.list.slice().reverse().map((o) => {
-        const t = new Date(o.time);
-        return `<div class="ko-row ${o.side}"><span>${o.side === 'buy' ? '🟢 BUY' : '🔴 SELL'}</span><b>${S.fmtUsd(o.notional)}</b><span>@ ${px(o.price)}</span><span class="ko-time">${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}</span></div>`;
-      }).join('');
-      sections.push(['Big orders (whales)', rows, true]);
-    }
-
-    el.innerHTML = sections.map(([title, body, raw]) =>
-      `<div class="k-section"><div class="k-title">${title}</div><div class="k-body">${raw ? body : escapeText(body)}</div></div>`
-    ).join('');
-    void last;
+  // ---- AI intelligence + engine panels (re-rendered every second) ----
+  function barProgress() {
+    const step = window.intervalSeconds(state.tf);
+    const last = state.liveCandle || state.candles[state.candles.length - 1];
+    if (!last) return 1;
+    const elapsed = Math.floor(Date.now() / 1000) - last.time;
+    return Math.min(1, Math.max(0.02, elapsed / step));
   }
 
-  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function renderEngines() {
+    renderIntelligence();
+    renderOrderFlow();
+    renderLiquidationEngine();
+    renderWhales();
+    renderSessions();
+  }
+
+  function renderIntelligence() {
+    const el = $('#knowledge');
+    if (!el || !analysisResult) return;
+    const rows = window.Engines.intelligence({
+      analysis: analysisResult,
+      candles: state.candles,
+      tf: state.tf,
+      symbol: symMeta().base,
+      signal,
+      price: (state.liveCandle || state.candles[state.candles.length - 1]).close,
+      pricePrecision: symMeta().pricePrecision,
+      flow: flowEngine.snapshot(barProgress()),
+      liq: liqEngine.snapshot(),
+      whales: whaleEngine.snapshot(),
+      session: window.Engines.sessionInfo(),
+    });
+    el.innerHTML = rows.map((r) =>
+      `<div class="k-section"><div class="k-title ${r.tone}">${escapeText(r.k)}</div><div class="k-body">${escapeText(r.v)}</div></div>`
+    ).join('');
+    const stamp = $('#aiStamp');
+    if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+  }
+
+  function renderOrderFlow() {
+    const el = $('#orderflow');
+    if (!el) return;
+    const f = flowEngine.snapshot(barProgress());
+    const S = window.Signals;
+    const gauge = (pct, color, label) => {
+      const r = 26, circ = 2 * Math.PI * r;
+      const dash = (pct / 100) * circ;
+      return `<div class="gauge">
+        <svg viewBox="0 0 64 64" class="gauge-svg" aria-hidden="true">
+          <circle cx="32" cy="32" r="${r}" class="gauge-track"></circle>
+          <circle cx="32" cy="32" r="${r}" stroke="${color}" stroke-dasharray="${dash.toFixed(1)} ${(circ - dash).toFixed(1)}" class="gauge-fill"></circle>
+        </svg>
+        <span class="gauge-val" style="color:${color}">${pct}</span>
+        <span class="gauge-label">${label}</span>
+      </div>`;
+    };
+    const maxD = Math.max(1, ...f.deltaBars.map((b) => Math.abs(b.delta)));
+    const spark = f.deltaBars.map((b) => {
+      const h = Math.max(8, Math.round((Math.abs(b.delta) / maxD) * 100));
+      const up = b.delta >= 0;
+      return `<span class="ofb ${up ? 'up' : 'down'}" style="height:${h}%; align-self:${up ? 'flex-end' : 'flex-start'}"></span>`;
+    }).join('');
+    el.innerHTML = `
+      <div class="gauges">
+        ${gauge(f.buyPct, CFG.COLORS.up, 'Buy<br>pressure')}
+        ${gauge(f.sellPct, CFG.COLORS.down, 'Sell<br>pressure')}
+      </div>
+      <div class="of-sparkhead"><span>Delta per bar</span><b class="${f.cvd >= 0 ? 'pos' : 'neg'}">CVD ${S.fmtUsd(f.cvd)}</b></div>
+      <div class="of-spark">${spark || '<span class="muted">collecting…</span>'}</div>
+      <div class="of-grid">
+        <div class="of-cell"><span>Buying vol (bar)</span><b class="pos">${S.fmtUsd(f.barBuy)}</b></div>
+        <div class="of-cell"><span>Selling vol (bar)</span><b class="neg">${S.fmtUsd(f.barSell)}</b></div>
+        <div class="of-cell"><span>Relative volume</span><b>${f.relVolume.toFixed(2)}×</b></div>
+        <div class="of-cell"><span>Aggression</span><b class="${f.skew > 0.15 ? 'pos' : f.skew < -0.15 ? 'neg' : ''}">${f.aggression}</b></div>
+      </div>`;
+  }
+
+  function renderLiquidationEngine() {
+    const el = $('#liqEngine');
+    if (!el) return;
+    const L = liqEngine.snapshot();
+    const S = window.Signals;
+    const total = L.long + L.short;
+    const longPct = total ? (L.long / total) * 100 : 50;
+    el.innerHTML = `
+      ${L.cascade ? `<div class="cascade-alert">⚠ CASCADE — ${L.cascadeSide}s being wiped out</div>` : ''}
+      <div class="liq-row">
+        <div class="liq-side"><span class="liq-label long">Longs rekt</span><b class="liq-val long">${S.fmtUsd(L.long)}</b></div>
+        <div class="liq-side right"><span class="liq-label short">Shorts rekt</span><b class="liq-val short">${S.fmtUsd(L.short)}</b></div>
+      </div>
+      <div class="liq-track"><div class="liq-fill" style="width:${longPct}%"></div></div>
+      <div class="of-grid tight">
+        <div class="of-cell"><span>Rate</span><b>${S.fmtUsd(L.perMin)}/min</b></div>
+        <div class="of-cell"><span>Events</span><b>${L.count}</b></div>
+        <div class="of-cell"><span>Last 60s</span><b>${S.fmtUsd(L.minuteLong + L.minuteShort)}</b></div>
+        <div class="of-cell"><span>Biggest</span><b class="${L.biggest ? (L.biggest.side === 'long' ? 'long-c' : 'short-c') : ''}">${L.biggest ? S.fmtUsd(L.biggest.notional) + ' ' + L.biggest.side : '—'}</b></div>
+      </div>`;
+  }
+
+  function renderWhales() {
+    const el = $('#whales');
+    if (!el) return;
+    const W = whaleEngine.snapshot();
+    const S = window.Signals;
+    const p = symMeta().pricePrecision;
+    const rows = W.recent.map((o) => {
+      const t = new Date(o.time);
+      return `<div class="ko-row ${o.side}">
+        <span>${o.side === 'buy' ? '🟢 BUY' : '🔴 SELL'}</span>
+        <b>${S.fmtUsd(o.notional)}</b>
+        <span class="muted">@ ${o.price.toFixed(p)}</span>
+        <span class="ko-time">${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')}</span>
+      </div>`;
+    }).join('');
+    const biasTxt = Math.abs(W.bias) < 0.15 ? 'Two-way' : W.bias > 0 ? 'Buying' : 'Selling';
+    el.innerHTML = `
+      <div class="of-grid tight">
+        <div class="of-cell"><span>Whale bias (15m)</span><b class="${W.bias > 0.15 ? 'pos' : W.bias < -0.15 ? 'neg' : ''}">${biasTxt}</b></div>
+        <div class="of-cell"><span>Trigger size</span><b>${S.fmtUsd(W.threshold)}</b></div>
+      </div>
+      <div class="whale-list">${rows || '<span class="muted">watching for large market orders…</span>'}</div>`;
+  }
+
+  function renderSessions() {
+    const el = $('#sessions');
+    if (!el) return;
+    const info = window.Engines.sessionInfo();
+    const chips = CFG.SESSIONS.map((s) => {
+      const on = info.active.some((a) => a.id === s.id);
+      return `<span class="sess-chip ${s.id} ${on ? 'on' : ''}">${s.emoji} ${s.name}${on ? ' · LIVE' : ''}</span>`;
+    }).join('');
+    const utc = new Date().toUTCString().slice(17, 25);
+    el.innerHTML = `
+      <div class="sess-chips">${chips}</div>
+      <div class="k-body">${escapeText(info.note)}</div>
+      <div class="sess-meta"><span>UTC ${utc}</span>${info.next ? `<span>${info.next.name} opens in ${fmtMinsShort(info.nextInMinutes)}</span>` : ''}</div>`;
+  }
+
+  function fmtMinsShort(m) {
+    if (m == null) return '';
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h ? `${h}h ${mm}m` : `${mm}m`;
+  }
+
   function escapeText(s) {
     return String(s).replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
   }
@@ -461,7 +521,7 @@
       dash.applyAnalysis(a, signal);
       renderSignalCard();
       renderTrendBadge();
-      renderKnowledge();
+      renderEngines();
     }, 1200);
   }
 
@@ -579,13 +639,6 @@
     updatePriceHeader(st.lastPrice);
   }
 
-  function updateLiqPanel() {
-    const rec = state.liq[state.symbol];
-    $('#liq-long').textContent = window.Signals.fmtUsd(rec.long);
-    $('#liq-short').textContent = window.Signals.fmtUsd(rec.short);
-    const total = rec.long + rec.short;
-    $('#liq-bar-long').style.width = total ? (rec.long / total * 100) + '%' : '50%';
-  }
 
   function setStatus(kind, text) {
     const el = $('#connStatus');
