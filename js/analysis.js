@@ -436,6 +436,74 @@
     return { up, high, low, startTime: candles[startIdx].time, levels, golden };
   }
 
+  // ---------- market structure & liquidity (external/internal, premium/discount) ----------
+  // External structure = major swings (the dealing range). Internal = the
+  // minor structure inside it. Premium/discount is measured against the
+  // equilibrium (50%) of the current dealing range.
+  function marketStructure(candles, pivots, structure, cvd) {
+    const lastIdx = candles.length - 1;
+    const price = candles[lastIdx].close;
+
+    const majorPivots = findPivots(candles, Math.max(5, CFG.PIVOT_LOOKBACK * 2));
+    const majorHighs = majorPivots.filter((p) => p.type === 'H');
+    const majorLows = majorPivots.filter((p) => p.type === 'L');
+
+    const bias = (highs, lows) => {
+      if (highs.length < 2 || lows.length < 2) return 'neutral';
+      const hh = highs[highs.length - 1].price > highs[highs.length - 2].price;
+      const hl = lows[lows.length - 1].price > lows[lows.length - 2].price;
+      if (hh && hl) return 'bullish';
+      if (!hh && !hl) return 'bearish';
+      return 'neutral';
+    };
+
+    const external = bias(majorHighs, majorLows);
+    const internal = structure.trend === 'up' ? 'bullish' : structure.trend === 'down' ? 'bearish' : 'neutral';
+
+    // dealing range from the most recent major swing high/low
+    const rangeHigh = majorHighs.length ? majorHighs[majorHighs.length - 1].price : Math.max(...candles.slice(-60).map((c) => c.high));
+    const rangeLow = majorLows.length ? majorLows[majorLows.length - 1].price : Math.min(...candles.slice(-60).map((c) => c.low));
+    const eq = (rangeHigh + rangeLow) / 2;
+    const span = Math.max(1e-9, rangeHigh - rangeLow);
+    const position = Math.max(0, Math.min(1, (price - rangeLow) / span)); // 0 = low, 1 = high
+    const zone = position > 0.55 ? 'premium' : position < 0.45 ? 'discount' : 'equilibrium';
+
+    // continuation vs reversal odds
+    let continuation = 50;
+    const reasons = [];
+    if (external !== 'neutral' && external === internal) { continuation += 18; reasons.push('external and internal structure agree'); }
+    else if (external !== 'neutral' && internal !== 'neutral') { continuation -= 18; reasons.push('internal structure disagrees with the higher-timeframe trend'); }
+    // buying in premium / selling in discount is poor location -> favors reversal
+    if (internal === 'bullish' && zone === 'premium') { continuation -= 14; reasons.push('bullish but price sits in premium — poor location for longs'); }
+    if (internal === 'bearish' && zone === 'discount') { continuation -= 14; reasons.push('bearish but price sits in discount — poor location for shorts'); }
+    if (internal === 'bullish' && zone === 'discount') { continuation += 12; reasons.push('bullish with price in discount — good location'); }
+    if (internal === 'bearish' && zone === 'premium') { continuation += 12; reasons.push('bearish with price in premium — good location'); }
+    const lastEv = structure.events[structure.events.length - 1];
+    if (lastEv && lastIdx - lastEv.idx <= 10) {
+      if (lastEv.kind === 'CHoCH') { continuation -= 16; reasons.push('a recent CHoCH warns the trend is turning'); }
+      else { continuation += 10; reasons.push('a recent BOS confirms trend continuation'); }
+    }
+    if (cvd && cvd.length === candles.length) {
+      const cvdChg = cvd[lastIdx].value - cvd[Math.max(0, lastIdx - 10)].value;
+      const priceUp = candles[lastIdx].close > candles[Math.max(0, lastIdx - 10)].close;
+      if ((priceUp && cvdChg < 0) || (!priceUp && cvdChg > 0)) { continuation -= 10; reasons.push('order flow diverges from price'); }
+    }
+    continuation = Math.max(10, Math.min(90, continuation));
+
+    // most recent structure event for the footer line
+    const recentEvents = structure.events.slice(-3).reverse().map((e) => ({
+      kind: e.kind, dir: e.dir, level: e.level,
+      scope: majorHighs.some((p) => Math.abs(p.price - e.level) / e.level < 0.0015) || majorLows.some((p) => Math.abs(p.price - e.level) / e.level < 0.0015) ? 'ext' : 'int',
+      barsAgo: lastIdx - e.idx,
+    }));
+
+    return {
+      external, internal, zone, eq, rangeHigh, rangeLow, position,
+      continuation, reversal: 100 - continuation, reasons,
+      recentEvents,
+    };
+  }
+
   // ---------- top-level ----------
   function analyze(candles) {
     if (candles.length < 30) return null;
@@ -452,15 +520,16 @@
     const doublePattern = findDoublePattern(candles, pivots, cvd, structure.trend);
     const profile = volumeProfile(candles);
     const phase = marketPhase(candles, cvd);
+    const mstructure = marketStructure(candles, pivots, structure, cvd);
     const lastATR = atr(candles, candles.length - 1);
     return {
       pivots, structure, orderBlocks, fvgs, liquidity, absorption, cvd,
-      divergence, fib, engulfing, doublePattern, profile, phase, atr: lastATR,
+      divergence, fib, engulfing, doublePattern, profile, phase, mstructure, atr: lastATR,
       lastVolSMA: volSMA(candles, candles.length - 1),
     };
   }
 
-  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, findEngulfing, srLevels, findDoublePattern, volumeProfile, marketPhase, atr };
+  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, findEngulfing, srLevels, marketStructure, findDoublePattern, volumeProfile, marketPhase, atr };
   if (typeof window !== 'undefined') window.Analysis = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

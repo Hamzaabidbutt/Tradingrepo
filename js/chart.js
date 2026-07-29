@@ -244,6 +244,108 @@
     }
   }
 
+  // ----- custom primitive: whale orders plotted at their trade price -----
+  class WhalePrimitive {
+    constructor() {
+      this.orders = []; // {time, price, side, notional, ratio}
+      this._chart = null;
+      this._series = null;
+      this._requestUpdate = null;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return { draw(target) { target.useBitmapCoordinateSpace((scope) => self._draw(scope)); } };
+        },
+        zOrder() { return 'top'; },
+      };
+    }
+    attached({ chart, series, requestUpdate }) { this._chart = chart; this._series = series; this._requestUpdate = requestUpdate; }
+    detached() { this._chart = null; this._series = null; }
+    paneViews() { return [this._paneView]; }
+    setOrders(orders) { this.orders = orders || []; if (this._requestUpdate) this._requestUpdate(); }
+
+    _draw(scope) {
+      if (!this._chart || !this._series || !this.orders.length) return;
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const ts = this._chart.timeScale();
+      const maxN = Math.max(...this.orders.map((o) => o.notional));
+      ctx.save();
+      ctx.font = `600 ${Math.round(9 * vr)}px 'Inter', sans-serif`;
+      for (const o of this.orders) {
+        const x = ts.timeToCoordinate(o.barTime);
+        const y = this._series.priceToCoordinate(o.price);
+        if (x === null || y === null) continue;
+        const rel = maxN ? o.notional / maxN : 0.5;
+        const r = (4 + rel * 7) * Math.min(hr, vr);
+        const bx = x * hr, by = y * vr;
+        const color = o.side === 'buy' ? C.up : C.down;
+        ctx.beginPath();
+        ctx.arc(bx, by, r, 0, Math.PI * 2);
+        ctx.fillStyle = color + 'aa';
+        ctx.fill();
+        ctx.lineWidth = Math.max(1, Math.round(1.5 * hr));
+        ctx.strokeStyle = color;
+        ctx.stroke();
+        if (rel > 0.55) {
+          ctx.fillStyle = color;
+          ctx.fillText('🐋 ' + fmtNum(o.notional), bx + r + 3 * hr, by + 3 * vr);
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  // ----- custom primitive: numeric delta values printed on the delta pane -----
+  class DeltaLabelsPrimitive {
+    constructor() {
+      this.bars = []; // {time, value}
+      this._chart = null;
+      this._series = null;
+      this._requestUpdate = null;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return { draw(target) { target.useBitmapCoordinateSpace((scope) => self._draw(scope)); } };
+        },
+        zOrder() { return 'top'; },
+      };
+    }
+    attached({ chart, series, requestUpdate }) { this._chart = chart; this._series = series; this._requestUpdate = requestUpdate; }
+    detached() { this._chart = null; this._series = null; }
+    paneViews() { return [this._paneView]; }
+    setBars(bars) { this.bars = bars || []; if (this._requestUpdate) this._requestUpdate(); }
+
+    _draw(scope) {
+      if (!this._chart || !this._series || !this.bars.length) return;
+      const ts = this._chart.timeScale();
+      const spacing = ts.options().barSpacing || 6;
+      const dense = spacing < 11; // too dense to label every bar
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const range = ts.getVisibleRange();
+      if (!range) return;
+      ctx.save();
+      ctx.font = `600 ${Math.round(8.5 * vr)}px 'Inter', sans-serif`;
+      ctx.textAlign = 'center';
+      // when bars are dense only the newest bar is labelled, so the current
+      // delta value is always readable on the indicator
+      const bars = dense ? this.bars.slice(-1) : this.bars;
+      for (const b of bars) {
+        if (b.time < range.from || b.time > range.to) continue;
+        const x = ts.timeToCoordinate(b.time);
+        const y = this._series.priceToCoordinate(b.value);
+        if (x === null || y === null) continue;
+        ctx.fillStyle = b.value >= 0 ? C.up : C.down;
+        const offset = b.value >= 0 ? -4 * vr : 10 * vr;
+        ctx.fillText(fmtSigned(b.value), x * hr, y * vr + offset);
+      }
+      ctx.restore();
+    }
+  }
+
   // ----- custom primitive: a name label written on the pane (top-left) -----
   class PaneLabelPrimitive {
     constructor(text) {
@@ -280,7 +382,7 @@
       this.priceLines = [];
       this.poolLines = [];
       // Only OB/FVG on by default — a clean chart on open; the rest are opt-in.
-      this.layers = { zones: true, markers: false, liquidity: false, levels: false, fib: false, sr: false, sessions: true };
+      this.layers = { zones: true, markers: false, liquidity: false, levels: false, fib: false, sr: false, sessions: true, whales: true };
       this._srLevels = [];
       this._lastAnalysis = null;
       this._lastSignal = null;
@@ -330,6 +432,8 @@
       this.candles.attachPrimitive(this.srPrimitive);
       this.sessionsPrimitive = new SessionsPrimitive();
       this.candles.attachPrimitive(this.sessionsPrimitive);
+      this.whalePrimitive = new WhalePrimitive();
+      this.candles.attachPrimitive(this.whalePrimitive);
       this.priceLabel = new PaneLabelPrimitive('PRICE · Smart-money structures (OB · FVG · liquidity · fib)');
       this.candles.attachPrimitive(this.priceLabel);
       this.markers = LWC.createSeriesMarkers(this.candles, []);
@@ -341,7 +445,8 @@
         lastValueVisible: false,
         priceLineVisible: false,
       }, 1);
-      this.volume.attachPrimitive(new PaneLabelPrimitive('VOLUME'));
+      this.volumeLabel = new PaneLabelPrimitive('VOLUME');
+      this.volume.attachPrimitive(this.volumeLabel);
 
       // pane 2: delta histogram + CVD line
       this.delta = this.chart.addSeries(LWC.HistogramSeries, {
@@ -351,7 +456,10 @@
         lastValueVisible: false,
         priceLineVisible: false,
       }, 2);
-      this.delta.attachPrimitive(new PaneLabelPrimitive('DELTA VOLUME (buy − sell) + CVD line'));
+      this.deltaLabel = new PaneLabelPrimitive('DELTA VOLUME (buy − sell) + CVD line');
+      this.delta.attachPrimitive(this.deltaLabel);
+      this.deltaLabels = new DeltaLabelsPrimitive();
+      this.delta.attachPrimitive(this.deltaLabels);
       this.cvd = this.chart.addSeries(LWC.LineSeries, {
         color: C.cvd,
         lineWidth: 2,
@@ -419,6 +527,7 @@
       this._cvdAcc = acc - (last ? last.delta : 0);
       this._lastClosedTime = candles.length > 1 ? candles[candles.length - 2].time : 0;
       this._candleTimes = candles.map((c) => c.time);
+      this.deltaLabels.setBars(candles.slice(-60).map((c) => ({ time: c.time, value: c.delta })));
       this.setLiquidations(liqBars || []);
       this.chart.timeScale().scrollToRealTime();
     }
@@ -431,7 +540,15 @@
       this.volume.update({ time: c.time, value: c.volume, color: c.close >= c.open ? C.upDim : C.downDim });
       this.delta.update({ time: c.time, value: c.delta, color: c.delta >= 0 ? C.up : C.down });
       const liveDelta = c.time > this._lastClosedTime ? c.delta : 0; // live bar rides on top of the closed accumulator
-      this.cvd.update({ time: c.time, value: this._cvdAcc + liveDelta });
+      const cvdVal = this._cvdAcc + liveDelta;
+      this.cvd.update({ time: c.time, value: cvdVal });
+      this._deltaBarMap = this._deltaBarMap || new Map();
+      this._deltaBarMap.set(c.time, c.delta);
+      const bars = [...this._deltaBarMap.entries()].slice(-60).map(([time, value]) => ({ time, value }));
+      this.deltaLabels.setBars(bars);
+      // numbers written into the indicator titles
+      this.deltaLabel.setText(`DELTA VOLUME  bar ${fmtSigned(c.delta)} · CVD ${fmtSigned(cvdVal)}`);
+      this.volumeLabel.setText(`VOLUME  ${fmtNum(c.volume)}`);
       if (c.closed && c.time > this._lastClosedTime) {
         this._cvdAcc += c.delta;
         this._lastClosedTime = c.time;
@@ -464,6 +581,11 @@
       } catch (e) { /* out-of-order bucket — ignored, next setHistory reconciles */ }
     }
 
+    setWhales(orders) {
+      this._whaleOrders = orders || [];
+      this.whalePrimitive.setOrders(this.layers.whales ? this._whaleOrders : []);
+    }
+
     setSR(levels) {
       this._srLevels = levels || [];
       this.srPrimitive.setLevels(this.layers.sr ? this._srLevels : []);
@@ -494,6 +616,7 @@
       this.layers[name] = on;
       if (name === 'sr') { this.srPrimitive.setLevels(on ? this._srLevels : []); return; }
       if (name === 'sessions') { this.setSessions(this._sessionCandles || [], this._sessionTf || '15m'); return; }
+      if (name === 'whales') { this.whalePrimitive.setOrders(on ? (this._whaleOrders || []) : []); return; }
       if (this._lastAnalysis) this.applyAnalysis(this._lastAnalysis, this._lastSignal);
     }
 
@@ -635,6 +758,8 @@
     if (a >= 1e3) return (x / 1e3).toFixed(1) + 'K';
     return x.toFixed(0);
   }
+
+  function fmtSigned(x) { return (x >= 0 ? '+' : '') + fmtNum(x); }
 
   window.Dashboard = Dashboard;
 })();

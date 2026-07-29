@@ -179,7 +179,7 @@
     updatePriceHeader(t.price); // tick-by-tick price, faster than kline pushes
     applyTradeToCandle(t);      // move the forming candle on every trade
     flowEngine.onTrade(t);
-    if (whaleEngine.onTrade(t)) renderWhales();
+    if (whaleEngine.onTrade(t)) { renderWhales(); pushWhaleMarker(); }
   }
 
   // ---- tick-level candle movement ----
@@ -349,7 +349,7 @@
       funding: (state.stats[state.symbol] || {}).funding,
     });
     dash.applyAnalysis(analysisResult, signal);
-    renderSignalCard();
+    renderSignalEngine();
     renderTrendBadge();
     renderEngines();
     applySR();
@@ -367,10 +367,89 @@
 
   function renderEngines() {
     renderIntelligence();
+    renderSignalEngine();
     renderOrderFlow();
     renderLiquidationEngine();
+    renderMarketStructure();
     renderWhales();
     renderSessions();
+  }
+
+  // ---- signal engine (fires only on strong confluence) ----
+  function renderSignalEngine() {
+    const el = $('#signalEngine');
+    if (!el || !signal) return;
+    const p = symMeta().pricePrecision;
+    if (signal.direction === 'WAIT' || !signal.levels) {
+      el.innerHTML = `<div class="sig-empty">
+        <div class="sig-empty-icon">🎯</div>
+        <div>No high-probability setup right now.<br>
+        Composite confidence <b>${signal.confidence}%</b> is below the signal threshold — the engine only fires on strong confluence.</div>
+      </div>`;
+      return;
+    }
+    const L = signal.levels;
+    el.innerHTML = `
+      <div class="sig-row">
+        <span class="sig-direction ${signal.direction === 'LONG' ? 'pos' : 'neg'}">${signal.direction}</span>
+        <div class="sig-conf">
+          <div class="conf-top"><span>confluence</span><b>${signal.confidence}%</b></div>
+          <div class="conf-track"><div class="conf-fill ${signal.direction === 'LONG' ? 'fill-pos' : 'fill-neg'}" style="width:${signal.confidence}%"></div></div>
+        </div>
+      </div>
+      <div class="sig-levels">
+        <div class="level"><span>Entry zone</span><b class="entry-c">${L.entry.toFixed(p)}</b></div>
+        <div class="level"><span>Stop loss</span><b class="neg">${L.stop.toFixed(p)}</b></div>
+        <div class="level"><span>Target 1</span><b class="pos">${L.t1.toFixed(p)}</b></div>
+        <div class="level"><span>Target 2</span><b class="pos">${L.t2.toFixed(p)}</b></div>
+        <div class="level"><span>Risk : Reward</span><b>1 : ${L.rr.toFixed(2)}</b></div>
+      </div>
+      <div class="card-subtitle">Why</div>
+      <div class="sig-factors">${signal.factors.map((f) => `
+        <div class="factor">
+          <span class="factor-dot ${f.dir > 0 ? 'dot-pos' : f.dir < 0 ? 'dot-neg' : 'dot-wait'}"></span>
+          <div><div class="factor-name">${escapeText(f.name)} <span class="factor-w">w${f.weight}</span></div>
+          <div class="factor-note">${escapeText(f.note)}</div></div>
+        </div>`).join('')}</div>`;
+  }
+
+  // ---- market structure & liquidity ----
+  function renderMarketStructure() {
+    const el = $('#mstructure');
+    if (!el || !analysisResult || !analysisResult.mstructure) return;
+    const m = analysisResult.mstructure;
+    const p = symMeta().pricePrecision;
+    const badge = (txt, cls) => `<span class="ms-badge ${cls}">${txt}</span>`;
+    const extCls = m.external === 'bullish' ? 'bull' : m.external === 'bearish' ? 'bear' : 'neutral';
+    const intCls = m.internal === 'bullish' ? 'bull' : m.internal === 'bearish' ? 'bear' : 'neutral';
+    const zoneCls = m.zone === 'premium' ? 'bear' : m.zone === 'discount' ? 'bull' : 'neutral';
+    const events = m.recentEvents.map((e) => `
+      <div class="ms-event">
+        <span class="ms-scope">${e.scope} ${e.kind}</span>
+        <span class="${e.dir === 'up' ? 'pos' : 'neg'}">${e.dir === 'up' ? '▲' : '▼'}</span>
+        <span class="ms-at">@${e.level.toFixed(p)}</span>
+      </div>`).join('');
+    el.innerHTML = `
+      <div class="ms-badges">
+        ${badge('EXTERNAL ' + m.external.toUpperCase(), extCls)}
+        ${badge('INTERNAL ' + m.internal.toUpperCase(), intCls)}
+        ${badge(m.zone.toUpperCase(), zoneCls)}
+      </div>
+      <div class="of-grid tight">
+        <div class="of-cell"><span>Continuation</span><b class="${m.continuation >= 50 ? 'pos' : ''}">${m.continuation}%</b></div>
+        <div class="of-cell"><span>Reversal</span><b class="${m.reversal > 50 ? 'neg' : ''}">${m.reversal}%</b></div>
+      </div>
+      <div class="ms-range">
+        <div class="ms-range-head">
+          <span>${m.rangeLow.toFixed(p)}</span>
+          <span>EQ ${m.eq.toFixed(p)}</span>
+          <span>${m.rangeHigh.toFixed(p)}</span>
+        </div>
+        <div class="ms-bar"><span class="ms-dot" style="left:${(m.position * 100).toFixed(1)}%"></span></div>
+        <div class="ms-range-head"><span class="pos">DISCOUNT</span><span class="neg">PREMIUM</span></div>
+      </div>
+      <div class="ms-events">${events || '<span class="muted">no recent structure events</span>'}</div>
+      ${m.reasons.length ? `<div class="ms-note">${escapeText(m.reasons[0])}.</div>` : ''}`;
   }
 
   function renderIntelligence() {
@@ -437,23 +516,35 @@
   function renderLiquidationEngine() {
     const el = $('#liqEngine');
     if (!el) return;
-    const L = liqEngine.snapshot();
+    const L = liqEngine.analysis({ candles: state.candles });
     const S = window.Signals;
-    const total = L.long + L.short;
-    const longPct = total ? (L.long / total) * 100 : 50;
+    const tile = (label, val, cls) => `<div class="liq-tile"><b class="${cls || ''}">${val}</b><span>${label}</span></div>`;
     el.innerHTML = `
-      ${L.cascade ? `<div class="cascade-alert">⚠ CASCADE — ${L.cascadeSide}s being wiped out</div>` : ''}
-      <div class="liq-row">
-        <div class="liq-side"><span class="liq-label long">Longs rekt</span><b class="liq-val long">${S.fmtUsd(L.long)}</b></div>
-        <div class="liq-side right"><span class="liq-label short">Shorts rekt</span><b class="liq-val short">${S.fmtUsd(L.short)}</b></div>
+      <div class="liq-tiles">
+        ${tile('LONG PRESSURE', L.longPressure, L.longPressure > 50 ? 'long-c' : '')}
+        ${tile('SHORT PRESSURE', L.shortPressure, L.shortPressure > 50 ? 'short-c' : '')}
+        ${tile('CASCADE RISK', L.cascadeRisk, L.cascadeRisk > 50 ? 'neg' : '')}
       </div>
-      <div class="liq-track"><div class="liq-fill" style="width:${longPct}%"></div></div>
+      <div class="ms-badges">
+        ${L.whaleDriven ? '<span class="ms-badge purple">WHALE-DRIVEN</span>' : ''}
+        <span class="ms-badge ${L.reversalOdds >= 55 ? 'bull' : 'neutral'}">REVERSAL ODDS ${L.reversalOdds}%</span>
+      </div>
+      <ul class="liq-bullets">${L.bullets.map((b) => `<li>${escapeText(b)}</li>`).join('')}</ul>
       <div class="of-grid tight">
+        <div class="of-cell"><span>Longs rekt</span><b class="long-c">${S.fmtUsd(L.long)}</b></div>
+        <div class="of-cell"><span>Shorts rekt</span><b class="short-c">${S.fmtUsd(L.short)}</b></div>
         <div class="of-cell"><span>Rate</span><b>${S.fmtUsd(L.perMin)}/min</b></div>
-        <div class="of-cell"><span>Events</span><b>${L.count}</b></div>
-        <div class="of-cell"><span>Last 60s</span><b>${S.fmtUsd(L.minuteLong + L.minuteShort)}</b></div>
-        <div class="of-cell"><span>Biggest</span><b class="${L.biggest ? (L.biggest.side === 'long' ? 'long-c' : 'short-c') : ''}">${L.biggest ? S.fmtUsd(L.biggest.notional) + ' ' + L.biggest.side : '—'}</b></div>
+        <div class="of-cell"><span>Biggest</span><b>${L.biggest ? S.fmtUsd(L.biggest.notional) : '—'}</b></div>
       </div>`;
+  }
+
+  // plot whale prints on the price chart, snapped to their candle bucket
+  function pushWhaleMarker() {
+    const step = window.intervalSeconds(state.tf);
+    const orders = whaleEngine.snapshot().recent.map((o) => ({
+      ...o, barTime: Math.floor(o.time / 1000 / step) * step,
+    }));
+    dash.setWhales(orders);
   }
 
   function renderWhales() {
@@ -519,7 +610,7 @@
         funding: (state.stats[state.symbol] || {}).funding,
       });
       dash.applyAnalysis(a, signal);
-      renderSignalCard();
+      renderSignalEngine();
       renderTrendBadge();
       renderEngines();
     }, 1200);
@@ -591,54 +682,22 @@
     el.className = 'badge ' + (t === 'up' ? 'badge-up' : t === 'down' ? 'badge-down' : 'badge-neutral');
   }
 
-  function renderSignalCard() {
-    if (!signal) return;
-    const dirEl = $('#sigDirection');
-    dirEl.textContent = signal.direction;
-    dirEl.className = 'sig-direction ' + (signal.direction === 'LONG' ? 'pos' : signal.direction === 'SHORT' ? 'neg' : 'wait');
-
-    $('#sigConfidence').textContent = signal.confidence + '%';
-    $('#sigConfBar').style.width = signal.confidence + '%';
-    $('#sigConfBar').className = 'conf-fill ' + (signal.direction === 'LONG' ? 'fill-pos' : signal.direction === 'SHORT' ? 'fill-neg' : 'fill-wait');
-
-    const lv = $('#sigLevels');
-    if (signal.levels) {
-      const p = symMeta().pricePrecision;
-      const L = signal.levels;
-      lv.innerHTML = `
-        <div class="level"><span>Entry zone</span><b class="entry-c">${L.entry.toFixed(p)}</b></div>
-        <div class="level"><span>Stop loss</span><b class="neg">${L.stop.toFixed(p)}</b></div>
-        <div class="level"><span>Target 1</span><b class="pos">${L.t1.toFixed(p)}</b></div>
-        <div class="level"><span>Target 2</span><b class="pos">${L.t2.toFixed(p)}</b></div>
-        <div class="level"><span>Risk : Reward</span><b>1 : ${L.rr.toFixed(2)}</b></div>`;
-    } else {
-      lv.innerHTML = '<div class="level-wait">No high-confluence setup right now — waiting for price to reach a zone of interest.</div>';
-    }
-
-    $('#sigFactors').innerHTML = signal.factors.map((f) => `
-      <div class="factor">
-        <span class="factor-dot ${f.dir > 0 ? 'dot-pos' : f.dir < 0 ? 'dot-neg' : 'dot-wait'}"></span>
-        <div><div class="factor-name">${f.name} <span class="factor-w">w${f.weight}</span></div>
-        <div class="factor-note">${f.note}</div></div>
-      </div>`).join('');
-  }
-
   async function refreshStats() {
     let st;
     try {
       st = state.demo ? feed.demoStats(state.symbol) : await feed.fetchStats(state.symbol);
     } catch (e) { return; }
     state.stats[state.symbol] = st;
+    const p = symMeta().pricePrecision;
     $('#stat-funding').textContent = (st.funding * 100).toFixed(4) + '%';
     $('#stat-funding').className = 'stat-value ' + (st.funding >= 0 ? 'pos' : 'neg');
     $('#stat-oi').textContent = window.Signals.fmtUsd(st.openInterest * st.markPrice);
     $('#stat-change').textContent = (st.change24h >= 0 ? '+' : '') + st.change24h.toFixed(2) + '%';
     $('#stat-change').className = 'stat-value ' + (st.change24h >= 0 ? 'pos' : 'neg');
     $('#stat-vol24').textContent = window.Signals.fmtUsd(st.volume24h);
-    if (st.high24h) $('#stat-hl').textContent = `${st.high24h.toFixed(symMeta().pricePrecision)} / ${st.low24h.toFixed(symMeta().pricePrecision)}`;
+    if (st.high24h) $('#stat-hl').textContent = `${st.high24h.toFixed(p)} / ${st.low24h.toFixed(p)}`;
     updatePriceHeader(st.lastPrice);
   }
-
 
   function setStatus(kind, text) {
     const el = $('#connStatus');

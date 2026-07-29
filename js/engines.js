@@ -119,6 +119,46 @@
       return bar;
     }
 
+    // Rich read of the liquidation state: directional pressure (0-100),
+    // cascade risk, whale-driven detection and reversal odds.
+    analysis(ctx) {
+      const s = this.snapshot();
+      const now = Date.now();
+      const window = this.events.filter((e) => now - e.time < 600000); // 10 min
+      const totalW = window.reduce((a, e) => a + e.notional, 0) || 1;
+      let longW = 0, shortW = 0, big = 0;
+      for (const e of window) {
+        if (e.side === 'long') longW += e.notional; else shortW += e.notional;
+        if (e.notional > 50000) big += e.notional;
+      }
+      const scale = (v) => Math.max(0, Math.min(100, Math.round(v)));
+      // pressure = share of flow x recency-weighted rate
+      const rateFactor = Math.min(1, s.perMin / 50000);
+      const longPressure = scale((longW / totalW) * 100 * (window.length ? rateFactor + 0.35 : 0));
+      const shortPressure = scale((shortW / totalW) * 100 * (window.length ? rateFactor + 0.35 : 0));
+      const dominance = Math.abs(longW - shortW) / totalW;
+      const cascadeRisk = scale((s.cascade ? 60 : 0) + dominance * 25 + rateFactor * 40);
+      const whaleDriven = window.length > 0 && big / totalW > 0.5;
+
+      // reversal odds: heavy one-sided liquidations exhaust that side
+      let reversal = 50;
+      const bullets = [];
+      if (window.length) {
+        const side = longW > shortW ? 'long' : 'short';
+        const moves = ctx && ctx.candles ? recentMove(ctx.candles) : 0;
+        reversal += dominance * 25;
+        if (s.cascade) { reversal += 10; }
+        if (whaleDriven) { reversal += 5; }
+        reversal = scale(reversal);
+        bullets.push(`${side === 'long' ? 'Longs' : 'Shorts'} were liquidated on the last impulse (intensity ${Math.round(dominance * 100)}/100, move ${Math.abs(moves).toFixed(2)}%).`);
+        if (whaleDriven) bullets.push('Order size profile suggests whales triggered the cascade deliberately.');
+        bullets.push(`Net liquidation pressure sits on ${side}s — squeezing that side is fuel for a move ${side === 'long' ? 'up' : 'down'} once it clears.`);
+      } else {
+        bullets.push('No liquidations recorded yet on this session — the panel fills as forced orders print.');
+      }
+      return { ...s, longPressure, shortPressure, cascadeRisk, whaleDriven, reversalOdds: reversal, bullets };
+    }
+
     snapshot() {
       const now = Date.now();
       const recent = this.events.filter((e) => now - e.time < 300000); // 5 min
@@ -154,15 +194,30 @@
       this.orders = [];
       this.buyNotional = 0;
       this.sellNotional = 0;
+      this.sizes = [];      // rolling sample of recent trade notionals
+      this.threshold = 0;
+    }
+
+    // Threshold is the 99th percentile of recent trade sizes (with an
+    // absolute floor) — this adapts across coins and volatility regimes,
+    // unlike a fixed multiple of the mean.
+    _recomputeThreshold() {
+      if (this.sizes.length < 20) return;
+      const sorted = this.sizes.slice().sort((a, b) => a - b);
+      const p99 = sorted[Math.floor(sorted.length * 0.99)] || sorted[sorted.length - 1];
+      const floor = this.demo ? 250 : 20000;
+      this.threshold = Math.max(floor, p99);
     }
 
     onTrade(t) {
       const notional = t.qty * t.price;
       this.n++;
       this.avg += (notional - this.avg) / Math.min(this.n, 500);
-      const floor = this.demo ? 300 : 25000;
-      const threshold = Math.max(floor, this.avg * 20);
-      if (this.n > 40 && notional >= threshold) {
+      this.sizes.push(notional);
+      if (this.sizes.length > 500) this.sizes.shift();
+      if (this.n % 25 === 0 || !this.threshold) this._recomputeThreshold();
+      const threshold = this.threshold || (this.demo ? 250 : 20000);
+      if (this.n > 20 && notional >= threshold) {
         const o = { side: t.side, notional, price: t.price, time: t.time || Date.now(), ratio: this.avg ? notional / this.avg : 0 };
         this.orders.push(o);
         if (this.orders.length > 40) this.orders.shift();
@@ -183,7 +238,7 @@
         buyNotional: b, sellNotional: s,
         bias: total ? (b - s) / total : 0,
         count: recent.length,
-        threshold: Math.max(this.demo ? 300 : 25000, this.avg * 20),
+        threshold: this.threshold || (this.demo ? 250 : 20000),
       };
     }
   }
@@ -324,6 +379,13 @@
     if (watch.length) out.push({ k: 'Watching', v: `Key levels: ${watch.join(' · ')}.`, tone: 'neutral' });
 
     return out;
+  }
+
+  function recentMove(candles) {
+    const n = candles.length;
+    if (n < 6) return 0;
+    const from = candles[n - 6].close;
+    return ((candles[n - 1].close - from) / from) * 100;
   }
 
   function cap(s) { return String(s).charAt(0).toUpperCase() + String(s).slice(1); }

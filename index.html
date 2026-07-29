@@ -6,7 +6,7 @@
   <title>FlowSight — UNI &amp; ORDI Smart-Money Dashboard</title>
   <meta name="description" content="Live smart-money analysis for UNIUSDT and ORDIUSDT: liquidity hunts, order blocks, FVGs, CHoCH/BOS, delta volume and liquidations with plain-language reasoning." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
-  <link rel="stylesheet" href="css/style.css?v=7" />
+  <link rel="stylesheet" href="css/style.css?v=8" />
 </head>
 <body>
   <div id="errBanner" class="err-banner hidden"></div>
@@ -45,59 +45,60 @@
       <label><input type="checkbox" data-layer="sr"> S/R</label>
       <label><input type="checkbox" data-layer="levels"> Entry/Exit</label>
       <label><input type="checkbox" data-layer="sessions" checked> Sessions</label>
+      <label><input type="checkbox" data-layer="whales" checked> Whales</label>
     </div>
   </div>
 
   <main class="layout">
-    <section class="chart-wrap">
-      <div id="ohlcLegend" class="ohlc-legend hidden"></div>
-      <div id="countdown" class="countdown">—</div>
-      <div id="chart" class="chart"></div>
+    <section class="chart-col">
+      <div class="chart-wrap">
+        <div id="ohlcLegend" class="ohlc-legend hidden"></div>
+        <div id="countdown" class="countdown">—</div>
+        <div id="chart" class="chart"></div>
+      </div>
+
+      <div class="engine-grid">
+        <div class="card">
+          <div class="card-title">Signal engine</div>
+          <div id="signalEngine"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Order flow</div>
+          <div id="orderflow" class="orderflow"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Liquidation engine</div>
+          <div id="liqEngine"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Market structure &amp; liquidity</div>
+          <div id="mstructure"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">🐋 Whale detector</div>
+          <div id="whales"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Trading sessions</div>
+          <div id="sessions"></div>
+        </div>
+
+        <div class="card feed-card">
+          <div class="card-title">Live reasoning</div>
+          <div id="feed" class="feed"></div>
+        </div>
+      </div>
     </section>
 
     <aside class="side">
-      <div class="card signal-card">
-        <div class="card-title">Signal <span class="hint" title="Confluence score: the share of weighted factors that agree on a direction. It is a probability aid, NOT a guarantee — no tool can promise 90% accuracy.">ⓘ</span></div>
-        <div class="sig-row">
-          <span id="sigDirection" class="sig-direction wait">WAIT</span>
-          <div class="sig-conf">
-            <div class="conf-top"><span>confluence</span><b id="sigConfidence">0%</b></div>
-            <div class="conf-track"><div id="sigConfBar" class="conf-fill fill-wait"></div></div>
-          </div>
-        </div>
-        <div id="sigLevels" class="sig-levels"></div>
-        <div class="card-subtitle">Why (weighted factors)</div>
-        <div id="sigFactors" class="sig-factors"></div>
-      </div>
-
-      <div class="card">
+      <div class="card ai-card">
         <div class="card-title">🧠 AI Intelligence Engine <span class="muted">live · <span id="aiStamp">—</span></span></div>
         <div id="knowledge" class="knowledge"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Order flow</div>
-        <div id="orderflow" class="orderflow"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Liquidation engine <span class="muted">(since page open)</span></div>
-        <div id="liqEngine"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">🐋 Whale detector</div>
-        <div id="whales"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Trading sessions</div>
-        <div id="sessions"></div>
-      </div>
-
-      <div class="card feed-card">
-        <div class="card-title">Live reasoning</div>
-        <div id="feed" class="feed"></div>
       </div>
     </aside>
   </main>
@@ -107,14 +108,14 @@
     Data: Binance USDT-M Futures (public API). Liquidation history starts when you open the page.
   </footer>
 
-  <script src="js/vendor/lightweight-charts.standalone.production.js?v=7"></script>
-  <script src="js/config.js?v=7"></script>
-  <script src="js/engines.js?v=7"></script>
-  <script src="js/data.js?v=7"></script>
-  <script src="js/analysis.js?v=7"></script>
-  <script src="js/signals.js?v=7"></script>
-  <script src="js/reasoning.js?v=7"></script>
-  <script src="js/chart.js?v=7"></script>
-  <script src="js/app.js?v=7"></script>
+  <script src="js/vendor/lightweight-charts.standalone.production.js?v=8"></script>
+  <script src="js/config.js?v=8"></script>
+  <script src="js/engines.js?v=8"></script>
+  <script src="js/data.js?v=8"></script>
+  <script src="js/analysis.js?v=8"></script>
+  <script src="js/signals.js?v=8"></script>
+  <script src="js/reasoning.js?v=8"></script>
+  <script src="js/chart.js?v=8"></script>
+  <script src="js/app.js?v=8"></script>
 </body>
 </html>
