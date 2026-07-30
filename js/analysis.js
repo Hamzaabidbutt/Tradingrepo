@@ -436,6 +436,271 @@
     return { up, high, low, startTime: candles[startIdx].time, levels, golden };
   }
 
+  // ---------- classic technical analysis ----------
+  // RSI, MACD, Bollinger, Stochastic, ATR, ADX, VWAP, pivots and candlestick
+  // patterns, each returned with a plain-language read so the panel can
+  // explain what it means rather than just printing a number.
+  function technicals(candles) {
+    const close = candles.map((c) => c.close);
+    const n = close.length;
+    if (n < 30) return null;
+    const price = close[n - 1];
+    const readings = [];
+
+    // --- RSI(14) ---
+    const rsiSeries = rsi(close, 14);
+    const rsiVal = rsiSeries[n - 1];
+    let rsiBias = 'neutral', rsiNote;
+    if (rsiVal >= 70) { rsiBias = 'bearish'; rsiNote = `Overbought at ${rsiVal.toFixed(1)} — momentum is stretched, pullbacks get more likely (though strong trends can stay overbought).`; }
+    else if (rsiVal <= 30) { rsiBias = 'bullish'; rsiNote = `Oversold at ${rsiVal.toFixed(1)} — selling is stretched, bounces get more likely.`; }
+    else if (rsiVal > 55) { rsiBias = 'bullish'; rsiNote = `${rsiVal.toFixed(1)} — momentum favours buyers without being overheated.`; }
+    else if (rsiVal < 45) { rsiBias = 'bearish'; rsiNote = `${rsiVal.toFixed(1)} — momentum favours sellers without being oversold.`; }
+    else rsiNote = `${rsiVal.toFixed(1)} — momentum is balanced, no edge from RSI right now.`;
+    // RSI divergence over the last 30 bars
+    const rsiDiv = divergence(close, rsiSeries, 30);
+    if (rsiDiv) {
+      rsiBias = rsiDiv;
+      rsiNote += ` ${rsiDiv === 'bullish' ? 'Bullish divergence: price made a lower low but RSI did not — selling pressure is fading.' : 'Bearish divergence: price made a higher high but RSI did not — buying pressure is fading.'}`;
+    }
+    readings.push({ key: 'rsi', label: 'RSI (14)', value: rsiVal.toFixed(1), bias: rsiBias, note: rsiNote });
+
+    // --- MACD(12,26,9) ---
+    const emaF = ema(close, 12), emaS = ema(close, 26);
+    const macdLine = close.map((_, i) => emaF[i] - emaS[i]);
+    const signalLine = ema(macdLine, 9);
+    const hist = macdLine.map((v, i) => v - signalLine[i]);
+    const h = hist[n - 1], hPrev = hist[n - 2];
+    const macdBias = h > 0 ? 'bullish' : h < 0 ? 'bearish' : 'neutral';
+    const crossedUp = hPrev <= 0 && h > 0, crossedDown = hPrev >= 0 && h < 0;
+    const macdNote = crossedUp ? 'MACD just crossed above its signal line — a fresh momentum shift up.'
+      : crossedDown ? 'MACD just crossed below its signal line — a fresh momentum shift down.'
+      : h > 0 ? `Above the signal line and ${Math.abs(h) > Math.abs(hPrev) ? 'expanding' : 'contracting'} — upward momentum is ${Math.abs(h) > Math.abs(hPrev) ? 'building' : 'easing'}.`
+      : `Below the signal line and ${Math.abs(h) > Math.abs(hPrev) ? 'expanding' : 'contracting'} — downward momentum is ${Math.abs(h) > Math.abs(hPrev) ? 'building' : 'easing'}.`;
+    readings.push({ key: 'macd', label: 'MACD', value: (h >= 0 ? '+' : '') + h.toPrecision(3), bias: macdBias, note: macdNote });
+
+    // --- Bollinger Bands(20,2) + squeeze ---
+    const bbLen = 20, bbMult = 2;
+    const bbMid = smaSeriesOf(close, bbLen);
+    const bbUpper = [], bbLower = [], widths = [];
+    for (let i = 0; i < n; i++) {
+      if (bbMid[i] == null) { bbUpper.push(null); bbLower.push(null); widths.push(null); continue; }
+      let v = 0;
+      for (let j = i - bbLen + 1; j <= i; j++) v += Math.pow(close[j] - bbMid[i], 2);
+      const sd = Math.sqrt(v / bbLen);
+      bbUpper.push(bbMid[i] + bbMult * sd);
+      bbLower.push(bbMid[i] - bbMult * sd);
+      widths.push((2 * bbMult * sd) / bbMid[i]);
+    }
+    const w = widths[n - 1];
+    const recentWidths = widths.slice(-60).filter((x) => x != null);
+    const minW = Math.min(...recentWidths), maxW = Math.max(...recentWidths);
+    const squeeze = w != null && maxW > minW && (w - minW) / (maxW - minW) < 0.2;
+    const posInBand = bbUpper[n - 1] != null ? (price - bbLower[n - 1]) / (bbUpper[n - 1] - bbLower[n - 1]) : 0.5;
+    const bbBias = posInBand > 0.95 ? 'bearish' : posInBand < 0.05 ? 'bullish' : 'neutral';
+    const bbNote = squeeze ? `Bands are squeezed to the tightest 20% of their recent range — volatility is coiling and a large move usually follows. Direction is not implied; wait for the break.`
+      : posInBand > 0.95 ? 'Price is riding the upper band — extended; in a strong trend this persists, in a range it mean-reverts.'
+      : posInBand < 0.05 ? 'Price is pinned to the lower band — extended to the downside.'
+      : `Price sits ${(posInBand * 100).toFixed(0)}% up the band, ${Math.abs(price - bbMid[n - 1]) / bbMid[n - 1] * 100 < 0.3 ? 'right at the mean' : 'between the mean and the edge'}.`;
+    readings.push({ key: 'bb', label: 'Bollinger (20,2)', value: squeeze ? 'SQUEEZE' : `${(posInBand * 100).toFixed(0)}%`, bias: bbBias, note: bbNote });
+
+    // --- Stochastic(14,3,3) ---
+    const kRaw = [];
+    for (let i = 0; i < n; i++) {
+      if (i < 13) { kRaw.push(null); continue; }
+      let hi = -Infinity, lo = Infinity;
+      for (let j = i - 13; j <= i; j++) { hi = Math.max(hi, candles[j].high); lo = Math.min(lo, candles[j].low); }
+      kRaw.push(hi > lo ? ((close[i] - lo) / (hi - lo)) * 100 : 50);
+    }
+    const kS = smaSeriesOf(kRaw.map((v) => (v == null ? 0 : v)), 3);
+    const dS = smaSeriesOf(kS.map((v) => (v == null ? 0 : v)), 3);
+    const k = kS[n - 1], dd = dS[n - 1];
+    const stochBias = k >= 80 ? 'bearish' : k <= 20 ? 'bullish' : k > dd ? 'bullish' : 'bearish';
+    readings.push({
+      key: 'stoch', label: 'Stochastic', value: `${k.toFixed(0)}/${dd.toFixed(0)}`, bias: stochBias,
+      note: k >= 80 ? 'Overbought zone — rallies here often stall unless the trend is very strong.'
+        : k <= 20 ? 'Oversold zone — dips here often find buyers.'
+        : `%K ${k > dd ? 'above' : 'below'} %D — short-term momentum is turning ${k > dd ? 'up' : 'down'}.`,
+    });
+
+    // --- ATR(14) volatility ---
+    const atrVal = atr(candles, n - 1, 14);
+    const atrPct = (atrVal / price) * 100;
+    const atrAvg = avgOf(candles, n - 2, 50, (c) => c.high - c.low) / price * 100;
+    readings.push({
+      key: 'atr', label: 'ATR (14)', value: atrPct.toFixed(2) + '%', bias: 'neutral',
+      note: `Average bar range is ${atrPct.toFixed(2)}% of price — ${atrPct > atrAvg * 1.3 ? 'volatility is elevated, so widen stops and expect fast moves' : atrPct < atrAvg * 0.7 ? 'volatility is compressed, which often precedes expansion' : 'volatility is normal'}. Use it to size stops (1.5× ATR ≈ ${(atrVal * 1.5).toPrecision(4)}).`,
+    });
+
+    // --- ADX(14) trend strength ---
+    const adxVal = adx(candles, 14);
+    readings.push({
+      key: 'adx', label: 'ADX (14)', value: adxVal.toFixed(1), bias: 'neutral',
+      note: adxVal > 40 ? 'Very strong trend — trend-following setups work, fading is dangerous.'
+        : adxVal > 25 ? 'Trending market — pullback entries in the trend direction are favoured.'
+        : adxVal > 20 ? 'Trend is developing but not yet decisive.'
+        : 'Weak or absent trend — this is range behaviour, so fade the edges rather than chase breakouts.',
+    });
+
+    // --- VWAP (rolling session) ---
+    const vwapVal = vwap(candles, 96);
+    const vwapDist = ((price - vwapVal) / vwapVal) * 100;
+    readings.push({
+      key: 'vwap', label: 'VWAP', value: vwapVal.toPrecision(6), bias: price > vwapVal ? 'bullish' : 'bearish',
+      note: `Price is ${Math.abs(vwapDist).toFixed(2)}% ${price > vwapVal ? 'above' : 'below'} the volume-weighted average — ${price > vwapVal ? 'buyers control the session and dips toward VWAP are where they defend' : 'sellers control the session and rallies into VWAP are where they defend'}.`,
+    });
+
+    // --- classic pivot points (from the previous higher-timeframe block) ---
+    const piv = pivots(candles);
+
+    // --- candlestick patterns on the last few bars ---
+    const patterns = candlePatterns(candles);
+
+    // --- combined technical score ---
+    const weights = { rsi: 1, macd: 1.2, bb: 0.6, stoch: 0.8, vwap: 1 };
+    let score = 0, total = 0;
+    for (const r of readings) {
+      const w2 = weights[r.key];
+      if (!w2) continue;
+      total += w2;
+      score += (r.bias === 'bullish' ? 1 : r.bias === 'bearish' ? -1 : 0) * w2;
+    }
+    const pct = total ? Math.round(50 + (score / total) * 50) : 50;
+    return {
+      readings, pivots: piv, patterns,
+      bbands: { upper: bbUpper, lower: bbLower, mid: bbMid, squeeze },
+      vwapValue: vwapVal,
+      score: pct,
+      verdict: pct >= 65 ? 'bullish' : pct <= 35 ? 'bearish' : 'mixed',
+      series: { rsi: rsiSeries, macdHist: hist },
+    };
+  }
+
+  function ema(arr, len) {
+    const k = 2 / (len + 1);
+    const out = [];
+    let e = arr[0];
+    for (let i = 0; i < arr.length; i++) { e = i ? arr[i] * k + e * (1 - k) : arr[0]; out.push(e); }
+    return out;
+  }
+
+  function smaSeriesOf(arr, len) {
+    return arr.map((_, i) => {
+      if (i < len - 1) return null;
+      let s = 0;
+      for (let j = i - len + 1; j <= i; j++) s += arr[j];
+      return s / len;
+    });
+  }
+
+  function rsi(close, len) {
+    const out = new Array(close.length).fill(50);
+    let gain = 0, loss = 0;
+    for (let i = 1; i < close.length; i++) {
+      const d = close[i] - close[i - 1];
+      const g = Math.max(0, d), l = Math.max(0, -d);
+      if (i <= len) {
+        gain += g / len; loss += l / len;
+        if (i === len) out[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+      } else {
+        gain = (gain * (len - 1) + g) / len;
+        loss = (loss * (len - 1) + l) / len;
+        out[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+      }
+    }
+    return out;
+  }
+
+  // price makes a new extreme that the oscillator does not confirm
+  function divergence(close, osc, lookback) {
+    const n = close.length;
+    if (n < lookback + 2) return null;
+    const from = n - lookback;
+    let loI = from, hiI = from;
+    for (let i = from; i < n - 1; i++) {
+      if (close[i] < close[loI]) loI = i;
+      if (close[i] > close[hiI]) hiI = i;
+    }
+    const last = n - 1;
+    if (close[last] < close[loI] && osc[last] > osc[loI] + 2) return 'bullish';
+    if (close[last] > close[hiI] && osc[last] < osc[hiI] - 2) return 'bearish';
+    return null;
+  }
+
+  function adx(candles, len) {
+    const n = candles.length;
+    let plus = 0, minus = 0, tr = 0;
+    const from = Math.max(1, n - len);
+    for (let i = from; i < n; i++) {
+      const up = candles[i].high - candles[i - 1].high;
+      const dn = candles[i - 1].low - candles[i].low;
+      plus += up > dn && up > 0 ? up : 0;
+      minus += dn > up && dn > 0 ? dn : 0;
+      tr += Math.max(candles[i].high - candles[i].low,
+        Math.abs(candles[i].high - candles[i - 1].close),
+        Math.abs(candles[i].low - candles[i - 1].close));
+    }
+    if (!tr) return 0;
+    const pDI = (plus / tr) * 100, mDI = (minus / tr) * 100;
+    const sum = pDI + mDI;
+    return sum ? (Math.abs(pDI - mDI) / sum) * 100 : 0;
+  }
+
+  function vwap(candles, len) {
+    const from = Math.max(0, candles.length - len);
+    let pv = 0, v = 0;
+    for (let i = from; i < candles.length; i++) {
+      const c = candles[i];
+      const typical = (c.high + c.low + c.close) / 3;
+      pv += typical * c.volume;
+      v += c.volume;
+    }
+    return v ? pv / v : candles[candles.length - 1].close;
+  }
+
+  // classic floor-trader pivots from the previous block of bars
+  function pivots(candles) {
+    const block = Math.min(96, Math.floor(candles.length / 2));
+    if (block < 5) return null;
+    const prev = candles.slice(-block * 2, -block);
+    if (!prev.length) return null;
+    const high = Math.max(...prev.map((c) => c.high));
+    const low = Math.min(...prev.map((c) => c.low));
+    const close = prev[prev.length - 1].close;
+    const p = (high + low + close) / 3;
+    return {
+      p,
+      r1: 2 * p - low, r2: p + (high - low), r3: high + 2 * (p - low),
+      s1: 2 * p - high, s2: p - (high - low), s3: low - 2 * (high - p),
+    };
+  }
+
+  function candlePatterns(candles) {
+    const out = [];
+    const n = candles.length;
+    for (let i = Math.max(1, n - 5); i < n; i++) {
+      const c = candles[i];
+      const body = Math.abs(c.close - c.open);
+      const range = c.high - c.low;
+      if (range <= 0) continue;
+      const upper = c.high - Math.max(c.open, c.close);
+      const lower = Math.min(c.open, c.close) - c.low;
+      const barsAgo = n - 1 - i;
+      if (body / range < 0.1) {
+        out.push({ name: 'Doji', bias: 'neutral', barsAgo, note: 'Open and close are nearly equal — indecision; the prior trend is pausing.' });
+      } else if (lower > body * 2 && upper < body * 0.5) {
+        out.push({ name: c.close > c.open ? 'Hammer' : 'Hanging man', bias: c.close > c.open ? 'bullish' : 'bearish', barsAgo,
+          note: 'A long lower wick shows price was rejected from the lows — buyers stepped in beneath the body.' });
+      } else if (upper > body * 2 && lower < body * 0.5) {
+        out.push({ name: c.close > c.open ? 'Inverted hammer' : 'Shooting star', bias: c.close > c.open ? 'bullish' : 'bearish', barsAgo,
+          note: 'A long upper wick shows price was rejected from the highs — sellers defended above the body.' });
+      } else if (body / range > 0.85) {
+        out.push({ name: c.close > c.open ? 'Bullish marubozu' : 'Bearish marubozu', bias: c.close > c.open ? 'bullish' : 'bearish', barsAgo,
+          note: 'Almost no wicks — one side controlled the entire bar from open to close.' });
+      }
+    }
+    return out.slice(-4);
+  }
+
   // ---------- Volume Spread Analysis (Wyckoff / Tom Williams rules) ----------
   // Compares each bar's SPREAD (range), CLOSE POSITION within that range and
   // VOLUME against recent averages to classify effort-vs-result anomalies.
@@ -463,6 +728,7 @@
       const add = (type, bias, label, note) => out.push({
         idx: i, time: c.time, type, bias, label, note,
         spreadR, volR, closePos, volume: c.volume,
+        low: c.low, high: c.high,
       });
 
       // --- classic VSA signatures, most specific first ---
@@ -647,16 +913,17 @@
     const phase = marketPhase(candles, cvd);
     const mstructure = marketStructure(candles, pivots, structure, cvd);
     const vsa = volumeSpreadAnalysis(candles);
+    const ta = technicals(candles);
     const mas = movingAverages(candles);
     const lastATR = atr(candles, candles.length - 1);
     return {
       pivots, structure, orderBlocks, fvgs, liquidity, absorption, cvd,
-      divergence, fib, engulfing, doublePattern, profile, phase, mstructure, vsa, mas, atr: lastATR,
+      divergence, fib, engulfing, doublePattern, profile, phase, mstructure, vsa, mas, ta, atr: lastATR,
       lastVolSMA: volSMA(candles, candles.length - 1),
     };
   }
 
-  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, findEngulfing, srLevels, marketStructure, volumeSpreadAnalysis, movingAverages, findDoublePattern, volumeProfile, marketPhase, atr };
+  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, findEngulfing, srLevels, marketStructure, volumeSpreadAnalysis, movingAverages, technicals, findDoublePattern, volumeProfile, marketPhase, atr };
   if (typeof window !== 'undefined') window.Analysis = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

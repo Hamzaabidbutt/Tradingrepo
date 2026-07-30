@@ -42,6 +42,7 @@
     buildTfPills();
     buildLayerToggles();
     dash = new window.Dashboard($('#chart'), symMeta().pricePrecision);
+    applyPreset('simple'); // needs the chart to exist
 
     feed.on('kline', (m) => { lastWsKline = Date.now(); onKline(m); });
     feed.on('aggTrade', onAggTrade);
@@ -350,6 +351,7 @@
     });
     dash.applyAnalysis(analysisResult, signal);
     dash.setMAs(analysisResult.mas);
+    dash.setTechnicals(analysisResult.ta, state.candles);
     renderSignalEngine();
     renderTrendBadge();
     renderEngines();
@@ -371,6 +373,7 @@
     for (const [name, fn] of [
       ['intelligence', renderIntelligence],
       ['signal', renderSignalEngine],
+      ['technicals', renderTechnicals],
       ['vsa', renderVSA],
       ['mas', renderMAs],
       ['orderflow', renderOrderFlow],
@@ -529,6 +532,50 @@
     const m = Math.floor(s / 60);
     if (m < 60) return m + 'm ago';
     return Math.floor(m / 60) + 'h ago';
+  }
+
+  // ---- technical analysis panel ----
+  function renderTechnicals() {
+    const el = $('#technicals');
+    if (!el || !analysisResult || !analysisResult.ta) return;
+    const ta = analysisResult.ta;
+    const p = symMeta().pricePrecision;
+    const rows = ta.readings.map((r) => `
+      <details class="ind">
+        <summary>
+          <span class="ind-dot ${r.bias}"></span>
+          <span class="ind-name">${escapeText(r.label)}</span>
+          <b class="ind-val ${r.bias}">${escapeText(r.value)}</b>
+        </summary>
+        <p class="ind-note">${escapeText(r.note)}</p>
+      </details>`).join('');
+    const pat = ta.patterns.length ? `
+      <div class="card-subtitle">Candle patterns</div>
+      <div class="pattern-list">${ta.patterns.map((x) => `
+        <div class="pattern ${x.bias}">
+          <b>${escapeText(x.name)}</b>
+          <span class="muted">${x.barsAgo === 0 ? 'this bar' : x.barsAgo + ' bars ago'}</span>
+          <div class="pattern-note">${escapeText(x.note)}</div>
+        </div>`).join('')}</div>` : '';
+    const piv = ta.pivots ? `
+      <div class="card-subtitle">Pivot levels</div>
+      <div class="pivot-row">
+        <span class="neg">R2 ${ta.pivots.r2.toFixed(p)}</span>
+        <span class="neg">R1 ${ta.pivots.r1.toFixed(p)}</span>
+        <span>P ${ta.pivots.p.toFixed(p)}</span>
+        <span class="pos">S1 ${ta.pivots.s1.toFixed(p)}</span>
+        <span class="pos">S2 ${ta.pivots.s2.toFixed(p)}</span>
+      </div>` : '';
+    el.innerHTML = `
+      <div class="ta-head">
+        <span class="ms-badge ${ta.verdict === 'bullish' ? 'bull' : ta.verdict === 'bearish' ? 'bear' : 'neutral'}">${ta.verdict.toUpperCase()}</span>
+        <div class="ta-score">
+          <div class="prob-track"><div class="prob-fill" style="width:${ta.score}%"></div></div>
+          <span class="muted">${ta.score}% of indicators lean bullish</span>
+        </div>
+      </div>
+      <div class="ind-list">${rows}</div>
+      ${pat}${piv}`;
   }
 
   // ---- volume spread analysis panel ----
@@ -800,6 +847,7 @@
       });
       dash.applyAnalysis(a, signal);
       dash.setMAs(a.mas);
+      dash.setTechnicals(a.ta, merged);
       renderSignalEngine();
       renderTrendBadge();
       renderEngines();
@@ -843,10 +891,34 @@
     }));
   }
 
+  // Presets keep the chart approachable: Simple shows just price context,
+  // Smart money adds the SMC layers, Everything turns all of it on.
+  const PRESETS = {
+    simple:  { zones: false, vsa: true,  mas: true,  bb: false, vwap: false, pivots: false, sr: false, liquidity: false, markers: false, fib: false, levels: false, whales: false, sessions: true },
+    smart:   { zones: true,  vsa: true,  mas: true,  bb: false, vwap: false, pivots: false, sr: true,  liquidity: true,  markers: true,  fib: false, levels: true,  whales: true,  sessions: true },
+    full:    { zones: true,  vsa: true,  mas: true,  bb: true,  vwap: true,  pivots: true,  sr: true,  liquidity: true,  markers: true,  fib: true,  levels: true,  whales: true,  sessions: true },
+  };
+
   function buildLayerToggles() {
     document.querySelectorAll('[data-layer]').forEach((cb) => {
       cb.addEventListener('change', () => dash.setLayer(cb.dataset.layer, cb.checked));
     });
+    document.querySelectorAll('[data-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        applyPreset(btn.dataset.preset);
+        document.querySelectorAll('[data-preset]').forEach((b) => b.classList.toggle('active', b === btn));
+      });
+    });
+  }
+
+  function applyPreset(name) {
+    const preset = PRESETS[name];
+    if (!preset) return;
+    for (const [layer, on] of Object.entries(preset)) {
+      const cb = document.querySelector(`[data-layer="${layer}"]`);
+      if (cb) cb.checked = on;
+      dash.setLayer(layer, on);
+    }
   }
 
   // rAF-throttled: BTC pushes dozens of trades per second

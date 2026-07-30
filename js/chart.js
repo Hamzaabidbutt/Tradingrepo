@@ -346,6 +346,72 @@
     }
   }
 
+  // ----- custom primitive: VSA marks in their own lane below the candles -----
+  // Positioned at a fixed pixel offset under each bar's low so labels never
+  // collide with price action.
+  class VSALanePrimitive {
+    constructor() {
+      this.marks = [];
+      this._chart = null;
+      this._series = null;
+      this._requestUpdate = null;
+      const self = this;
+      this._paneView = {
+        renderer() {
+          return { draw(target) { target.useBitmapCoordinateSpace((scope) => self._draw(scope)); } };
+        },
+        zOrder() { return 'top'; },
+      };
+    }
+    attached({ chart, series, requestUpdate }) { this._chart = chart; this._series = series; this._requestUpdate = requestUpdate; }
+    detached() { this._chart = null; this._series = null; }
+    paneViews() { return [this._paneView]; }
+    setMarks(marks) { this.marks = marks || []; if (this._requestUpdate) this._requestUpdate(); }
+
+    _draw(scope) {
+      if (!this._chart || !this._series || !this.marks.length) return;
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const ts = this._chart.timeScale();
+      const range = ts.getVisibleRange();
+      if (!range) return;
+      const spacing = ts.options().barSpacing || 6;
+      const showText = spacing > 17;
+      const height = scope.bitmapSize.height;
+      const GAP = 26 * vr;      // clear space between the candle low and the mark
+      ctx.save();
+      ctx.font = `700 ${Math.round(8.5 * vr)}px 'Inter', sans-serif`;
+      ctx.textAlign = 'center';
+      for (const m of this.marks) {
+        if (m.time < range.from || m.time > range.to) continue;
+        const x = ts.timeToCoordinate(m.time);
+        const yLow = this._series.priceToCoordinate(m.low);
+        if (x === null || yLow === null) continue;
+        const bx = x * hr;
+        let by = yLow * vr + GAP;
+        by = Math.min(by, height - 16 * vr); // keep inside the pane
+        const color = m.bias === 'bullish' ? C.up : C.down;
+        // small triangle pointing at the candle
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        const s = 4 * vr;
+        ctx.moveTo(bx, by - s * 1.6);
+        ctx.lineTo(bx - s, by + s * 0.4);
+        ctx.lineTo(bx + s, by + s * 0.4);
+        ctx.closePath();
+        ctx.fill();
+        if (showText) {
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.95;
+          ctx.fillText(m.label, bx, by + 14 * vr);
+          ctx.globalAlpha = 1;
+        }
+      }
+      ctx.restore();
+    }
+  }
+
   // ----- custom primitive: a name label written on the pane (top-left) -----
   class PaneLabelPrimitive {
     constructor(text) {
@@ -382,7 +448,7 @@
       this.priceLines = [];
       this.poolLines = [];
       // Only OB/FVG on by default — a clean chart on open; the rest are opt-in.
-      this.layers = { zones: true, markers: false, liquidity: false, levels: false, fib: false, sr: false, sessions: true, whales: true, mas: true, vsa: true };
+      this.layers = { zones: true, markers: false, liquidity: false, levels: false, fib: false, sr: false, sessions: true, whales: true, mas: true, vsa: true, bb: false, vwap: false, pivots: false };
       this._srLevels = [];
       this._lastAnalysis = null;
       this._lastSignal = null;
@@ -434,7 +500,9 @@
       this.candles.attachPrimitive(this.sessionsPrimitive);
       this.whalePrimitive = new WhalePrimitive();
       this.candles.attachPrimitive(this.whalePrimitive);
-      this.priceLabel = new PaneLabelPrimitive('PRICE · Smart-money structures (OB · FVG · liquidity · fib)');
+      this.vsaLane = new VSALanePrimitive();
+      this.candles.attachPrimitive(this.vsaLane);
+      this.priceLabel = new PaneLabelPrimitive('PRICE');
       this.candles.attachPrimitive(this.priceLabel);
       this.markers = LWC.createSeriesMarkers(this.candles, []);
 
@@ -599,7 +667,7 @@
         if (!this.maSeries[l.key]) {
           this.maSeries[l.key] = this.chart.addSeries(LWC.LineSeries, {
             color: C['ma' + l.len] || C.ma200,
-            lineWidth: l.len >= 200 ? 2 : 1,
+            lineWidth: 1,
             priceLineVisible: false,
             lastValueVisible: true,
             crosshairMarkerVisible: false,
@@ -607,6 +675,54 @@
           }, 0);
         }
         this.maSeries[l.key].setData(l.series);
+      }
+    }
+
+    // Technical overlays: Bollinger bands, VWAP and pivot levels.
+    setTechnicals(ta, candles) {
+      this._ta = ta; this._taCandles = candles;
+      // --- bollinger ---
+      const wantBB = this.layers.bb && ta && ta.bbands;
+      if (!wantBB && this.bbSeries) {
+        for (const s of this.bbSeries) this.chart.removeSeries(s);
+        this.bbSeries = null;
+      }
+      if (wantBB) {
+        if (!this.bbSeries) {
+          this.bbSeries = ['upper', 'mid', 'lower'].map((k) => this.chart.addSeries(LWC.LineSeries, {
+            color: k === 'mid' ? 'rgba(167,139,250,0.55)' : 'rgba(167,139,250,0.35)',
+            lineWidth: 1,
+            lineStyle: k === 'mid' ? LWC.LineStyle.Dashed : LWC.LineStyle.Solid,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          }, 0));
+        }
+        const pack = (arr) => arr.map((v, i) => (v == null ? null : { time: candles[i].time, value: v })).filter(Boolean);
+        this.bbSeries[0].setData(pack(ta.bbands.upper));
+        this.bbSeries[1].setData(pack(ta.bbands.mid));
+        this.bbSeries[2].setData(pack(ta.bbands.lower));
+      }
+      // --- vwap ---
+      const wantV = this.layers.vwap && ta;
+      if (!wantV && this.vwapLine) { this.candles.removePriceLine(this.vwapLine); this.vwapLine = null; }
+      if (wantV) {
+        if (this.vwapLine) this.candles.removePriceLine(this.vwapLine);
+        this.vwapLine = this.candles.createPriceLine({
+          price: ta.vwapValue, color: C.violet, lineWidth: 2,
+          lineStyle: LWC.LineStyle.Solid, axisLabelVisible: true, title: 'VWAP',
+        });
+      }
+      // --- pivots ---
+      for (const l of (this.pivotLines || [])) this.candles.removePriceLine(l);
+      this.pivotLines = [];
+      if (this.layers.pivots && ta && ta.pivots) {
+        const p = ta.pivots;
+        const defs = [['R2', p.r2, C.down], ['R1', p.r1, C.down], ['P', p.p, C.inkMuted], ['S1', p.s1, C.up], ['S2', p.s2, C.up]];
+        for (const [title, price, color] of defs) {
+          this.pivotLines.push(this.candles.createPriceLine({
+            price, color, lineWidth: 1, lineStyle: LWC.LineStyle.Dotted,
+            axisLabelVisible: true, title,
+          }));
+        }
       }
     }
 
@@ -647,6 +763,7 @@
       if (name === 'sessions') { this.setSessions(this._sessionCandles || [], this._sessionTf || '15m'); return; }
       if (name === 'whales') { this.whalePrimitive.setOrders(on ? (this._whaleOrders || []) : []); return; }
       if (name === 'mas') { this.setMAs(this._mas); return; }
+      if (name === 'bb' || name === 'vwap' || name === 'pivots') { this.setTechnicals(this._ta, this._taCandles); return; }
       if (this._lastAnalysis) this.applyAnalysis(this._lastAnalysis, this._lastSignal);
     }
 
@@ -664,7 +781,7 @@
             top: b.top, bottom: b.bottom,
             color: b.dir === 'up' ? (respected ? C.obBullRespected : C.obBull) : (respected ? C.obBearRespected : C.obBear),
             border: respected ? (b.dir === 'up' ? C.up : C.down) : null,
-            label: `${b.dir === 'up' ? 'Demand OB' : 'Supply OB'}${respected ? ' ✓ respected' : ''}`,
+            label: respected ? (b.dir === 'up' ? 'Demand ✓' : 'Supply ✓') : '',
             labelColor: b.dir === 'up' ? C.up : C.down,
           });
         }
@@ -673,7 +790,7 @@
             timeStart: g.time,
             top: g.top, bottom: g.bottom,
             color: g.dir === 'up' ? C.fvgBull : C.fvgBear,
-            label: 'FVG',
+            label: '',
           });
         }
       }
@@ -697,20 +814,16 @@
       }
 
       // --- markers ---
+      // VSA gets its own lane under the candles rather than crowding them
+      this.vsaLane.setMarks(this.layers.vsa && analysis
+        ? (analysis.vsa || []).slice(-14).map((v) => ({
+            time: v.time, low: v.low, label: v.label, bias: v.bias,
+          }))
+        : []);
+
       const markers = [];
-      if (this.layers.vsa && analysis) {
-        for (const v of (analysis.vsa || []).slice(-10)) {
-          markers.push({
-            time: v.time,
-            position: v.bias === 'bullish' ? 'belowBar' : 'aboveBar',
-            color: v.bias === 'bullish' ? C.up : C.down,
-            shape: 'square',
-            text: v.label,
-          });
-        }
-      }
       if (this.layers.markers && analysis) {
-        for (const ev of analysis.structure.events.slice(-14)) {
+        for (const ev of analysis.structure.events.slice(-8)) {
           markers.push({
             time: ev.time,
             position: ev.dir === 'up' ? 'belowBar' : 'aboveBar',
@@ -728,7 +841,7 @@
             text: 'HUNT',
           });
         }
-        for (const a of analysis.absorption.slice(-6)) {
+        for (const a of analysis.absorption.slice(-4)) {
           markers.push({
             time: a.time,
             position: a.side === 'bullish' ? 'belowBar' : 'aboveBar',
@@ -746,7 +859,7 @@
             text: 'CVD DIV',
           });
         }
-        for (const e of (analysis.engulfing || []).slice(-6)) {
+        for (const e of (analysis.engulfing || []).filter((x) => x.strong).slice(-3)) {
           markers.push({
             time: e.time,
             position: e.side === 'bullish' ? 'belowBar' : 'aboveBar',
