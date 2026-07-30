@@ -382,7 +382,7 @@
       this.priceLines = [];
       this.poolLines = [];
       // Only OB/FVG on by default — a clean chart on open; the rest are opt-in.
-      this.layers = { zones: true, markers: false, liquidity: false, levels: false, fib: false, sr: false, sessions: true, whales: true };
+      this.layers = { zones: true, markers: false, liquidity: false, levels: false, fib: false, sr: false, sessions: true, whales: true, mas: true, vsa: true };
       this._srLevels = [];
       this._lastAnalysis = null;
       this._lastSignal = null;
@@ -437,6 +437,9 @@
       this.priceLabel = new PaneLabelPrimitive('PRICE · Smart-money structures (OB · FVG · liquidity · fib)');
       this.candles.attachPrimitive(this.priceLabel);
       this.markers = LWC.createSeriesMarkers(this.candles, []);
+
+      // key moving averages (created lazily in setMAs)
+      this.maSeries = {};
 
       // pane 1: volume
       this.volume = this.chart.addSeries(LWC.HistogramSeries, {
@@ -581,6 +584,32 @@
       } catch (e) { /* out-of-order bucket — ignored, next setHistory reconciles */ }
     }
 
+    // Key MA levels drawn on the price pane.
+    setMAs(mas) {
+      this._mas = mas;
+      const on = this.layers.mas && mas && mas.lines;
+      for (const key of Object.keys(this.maSeries)) {
+        if (!on || !mas.lines.some((l) => l.key === key)) {
+          this.chart.removeSeries(this.maSeries[key]);
+          delete this.maSeries[key];
+        }
+      }
+      if (!on) return;
+      for (const l of mas.lines) {
+        if (!this.maSeries[l.key]) {
+          this.maSeries[l.key] = this.chart.addSeries(LWC.LineSeries, {
+            color: C['ma' + l.len] || C.ma200,
+            lineWidth: l.len >= 200 ? 2 : 1,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            crosshairMarkerVisible: false,
+            title: l.label,
+          }, 0);
+        }
+        this.maSeries[l.key].setData(l.series);
+      }
+    }
+
     setWhales(orders) {
       this._whaleOrders = orders || [];
       this.whalePrimitive.setOrders(this.layers.whales ? this._whaleOrders : []);
@@ -617,6 +646,7 @@
       if (name === 'sr') { this.srPrimitive.setLevels(on ? this._srLevels : []); return; }
       if (name === 'sessions') { this.setSessions(this._sessionCandles || [], this._sessionTf || '15m'); return; }
       if (name === 'whales') { this.whalePrimitive.setOrders(on ? (this._whaleOrders || []) : []); return; }
+      if (name === 'mas') { this.setMAs(this._mas); return; }
       if (this._lastAnalysis) this.applyAnalysis(this._lastAnalysis, this._lastSignal);
     }
 
@@ -668,6 +698,17 @@
 
       // --- markers ---
       const markers = [];
+      if (this.layers.vsa && analysis) {
+        for (const v of (analysis.vsa || []).slice(-10)) {
+          markers.push({
+            time: v.time,
+            position: v.bias === 'bullish' ? 'belowBar' : 'aboveBar',
+            color: v.bias === 'bullish' ? C.up : C.down,
+            shape: 'square',
+            text: v.label,
+          });
+        }
+      }
       if (this.layers.markers && analysis) {
         for (const ev of analysis.structure.events.slice(-14)) {
           markers.push({

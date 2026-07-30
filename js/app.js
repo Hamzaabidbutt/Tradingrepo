@@ -349,6 +349,7 @@
       funding: (state.stats[state.symbol] || {}).funding,
     });
     dash.applyAnalysis(analysisResult, signal);
+    dash.setMAs(analysisResult.mas);
     renderSignalEngine();
     renderTrendBadge();
     renderEngines();
@@ -366,13 +367,20 @@
   }
 
   function renderEngines() {
-    renderIntelligence();
-    renderSignalEngine();
-    renderOrderFlow();
-    renderLiquidationEngine();
-    renderMarketStructure();
-    renderWhales();
-    renderSessions();
+    // each panel is isolated: one failing renderer must never blank the others
+    for (const [name, fn] of [
+      ['intelligence', renderIntelligence],
+      ['signal', renderSignalEngine],
+      ['vsa', renderVSA],
+      ['mas', renderMAs],
+      ['orderflow', renderOrderFlow],
+      ['liquidations', renderLiquidationEngine],
+      ['structure', renderMarketStructure],
+      ['whales', renderWhales],
+      ['sessions', renderSessions],
+    ]) {
+      try { fn(); } catch (e) { console.error('panel ' + name + ' failed:', e); }
+    }
   }
 
   // ---- signal engine (fires only on strong confluence) ----
@@ -452,10 +460,13 @@
       ${m.reasons.length ? `<div class="ms-note">${escapeText(m.reasons[0])}.</div>` : ''}`;
   }
 
+  // ---- AI intelligence: streaming analyst feed ----
+  const aiFeed = { items: [], seen: new Map() };
+
   function renderIntelligence() {
     const el = $('#knowledge');
     if (!el || !analysisResult) return;
-    const rows = window.Engines.intelligence({
+    const res = window.Engines.insights({
       analysis: analysisResult,
       candles: state.candles,
       tf: state.tf,
@@ -468,11 +479,189 @@
       whales: whaleEngine.snapshot(),
       session: window.Engines.sessionInfo(),
     });
-    el.innerHTML = rows.map((r) =>
-      `<div class="k-section"><div class="k-title ${r.tone}">${escapeText(r.k)}</div><div class="k-body">${escapeText(r.v)}</div></div>`
-    ).join('');
+
+    // stream in only genuinely new headlines; allow re-surfacing after 3 min
+    const now = Date.now();
+    const fresh = [];
+    for (const ins of res.list) {
+      const key = `${ins.category}:${ins.headline}`;
+      const last = aiFeed.seen.get(key);
+      if (last && now - last < 180000) continue;
+      aiFeed.seen.set(key, now);
+      fresh.push({ ...ins, time: now });
+    }
+    if (fresh.length) {
+      aiFeed.items = fresh.reverse().concat(aiFeed.items).slice(0, 40);
+    }
+
+    const dot = (s) => s === 'critical' ? 'sev-critical' : s === 'warning' ? 'sev-warning' : 'sev-info';
+    const head = `
+      <div class="ai-head">
+        <span class="bias-badge ${res.bias}">${res.bias.toUpperCase()} BIAS</span>
+        <span class="ai-meta">${symMeta().base} · ${state.tf}</span>
+      </div>
+      <div class="prob-wrap">
+        <div class="prob-track"><div class="prob-fill" style="width:${res.bullish}%"></div></div>
+        <div class="prob-legend"><span class="pos">${res.bullish}% bullish</span><span class="neg">${100 - res.bullish}% bearish</span></div>
+      </div>`;
+
+    const body = aiFeed.items.length
+      ? aiFeed.items.map((ins) => `
+        <article class="insight ${ins.bias}">
+          <div class="insight-head">
+            <span class="sev ${dot(ins.severity)}"></span>
+            <h4 class="insight-title ${ins.bias}">${escapeText(ins.headline)}</h4>
+            <time class="insight-time">${timeAgo(ins.time)}</time>
+          </div>
+          <p class="insight-detail">${escapeText(ins.detail)}</p>
+        </article>`).join('')
+      : '<p class="ai-empty">Analyst warming up — insights arrive within seconds…</p>';
+
+    el.innerHTML = head + `<div class="insight-list">${body}</div>`;
     const stamp = $('#aiStamp');
     if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+  }
+
+  function timeAgo(t) {
+    const s = Math.floor((Date.now() - t) / 1000);
+    if (s < 10) return 'now';
+    if (s < 60) return s + 's ago';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    return Math.floor(m / 60) + 'h ago';
+  }
+
+  // ---- volume spread analysis panel ----
+  function renderVSA() {
+    const el = $('#vsa');
+    if (!el || !analysisResult) return;
+    const vsa = analysisResult.vsa || [];
+    const lastIdx = state.candles.length - 1;
+    const recent = vsa.slice(-6).reverse();
+    const counts = {};
+    for (const v of vsa) counts[v.type] = (counts[v.type] || 0) + 1;
+    const bullN = vsa.filter((v) => v.bias === 'bullish').length;
+    const bearN = vsa.filter((v) => v.bias === 'bearish').length;
+    const verdict = bullN > bearN * 1.3 ? 'Supply is drying up — net bullish signatures'
+      : bearN > bullN * 1.3 ? 'Supply is overwhelming demand — net bearish signatures'
+      : 'Mixed signatures — no clear VSA edge right now';
+    el.innerHTML = `
+      <div class="of-grid tight">
+        <div class="of-cell"><span>Bullish signatures</span><b class="pos">${bullN}</b></div>
+        <div class="of-cell"><span>Bearish signatures</span><b class="neg">${bearN}</b></div>
+      </div>
+      <div class="ms-note">${escapeText(verdict)} (last ${Math.min(120, state.candles.length)} bars).</div>
+      <div class="vsa-list">
+        ${recent.length ? recent.map((v) => `
+          <div class="vsa-item ${v.bias}">
+            <div class="vsa-head">
+              <span class="vsa-tag ${v.bias}">${escapeText(v.label)}</span>
+              <span class="vsa-meta">spread ${v.spreadR.toFixed(1)}× · vol ${v.volR.toFixed(1)}× · ${lastIdx - v.idx === 0 ? 'this bar' : (lastIdx - v.idx) + ' bars ago'}</span>
+            </div>
+            <div class="vsa-note">${escapeText(v.note)}</div>
+          </div>`).join('')
+          : '<span class="muted">no unusual volume/spread activity in range</span>'}
+      </div>`;
+  }
+
+  // ---- key moving averages panel ----
+  function renderMAs() {
+    const el = $('#mas');
+    if (!el || !analysisResult || !analysisResult.mas) return;
+    const m = analysisResult.mas;
+    const p = symMeta().pricePrecision;
+    const rows = m.lines.slice().sort((a, b) => b.value - a.value).map((l) => `
+      <div class="ma-row">
+        <span class="ma-swatch" style="background:${CFG.COLORS['ma' + l.len] || CFG.COLORS.ma200}"></span>
+        <span class="ma-name">${l.label}</span>
+        <b class="ma-val">${l.value.toFixed(p)}</b>
+        <span class="ma-dist ${l.above ? 'pos' : 'neg'}">${l.above ? '+' : ''}${l.distancePct.toFixed(2)}%</span>
+      </div>`).join('');
+    el.innerHTML = `
+      <div class="ms-badges">
+        <span class="ms-badge ${m.regime === 'bullish' ? 'bull' : m.regime === 'bearish' ? 'bear' : 'neutral'}">${m.regime.toUpperCase()} REGIME</span>
+        <span class="ms-badge neutral">${m.aboveCount}/${m.total} ABOVE</span>
+        ${m.cross ? `<span class="ms-badge ${m.cross.type === 'golden' ? 'bull' : 'bear'}">${m.cross.type.toUpperCase()} CROSS</span>` : ''}
+      </div>
+      <div class="ma-list">${rows || '<span class="muted">not enough history for MAs on this timeframe</span>'}</div>
+      ${m.cross ? `<div class="ms-note">${escapeText(m.cross.note)}</div>` : m.nearest ? `<div class="ms-note">Nearest level: ${m.nearest.label} at ${m.nearest.value.toFixed(p)} (${Math.abs(m.nearest.distancePct).toFixed(2)}% away) — the line trend traders defend.</div>` : ''}`;
+  }
+
+  // ---- signal engine (fires only on strong confluence) ----
+  function renderSignalEngine() {
+    const el = $('#signalEngine');
+    if (!el || !signal) return;
+    const p = symMeta().pricePrecision;
+    if (signal.direction === 'WAIT' || !signal.levels) {
+      el.innerHTML = `<div class="sig-empty">
+        <div class="sig-empty-icon">🎯</div>
+        <div>No high-probability setup right now.<br>
+        Composite confidence <b>${signal.confidence}%</b> is below the signal threshold — the engine only fires on strong confluence.</div>
+      </div>`;
+      return;
+    }
+    const L = signal.levels;
+    el.innerHTML = `
+      <div class="sig-row">
+        <span class="sig-direction ${signal.direction === 'LONG' ? 'pos' : 'neg'}">${signal.direction}</span>
+        <div class="sig-conf">
+          <div class="conf-top"><span>confluence</span><b>${signal.confidence}%</b></div>
+          <div class="conf-track"><div class="conf-fill ${signal.direction === 'LONG' ? 'fill-pos' : 'fill-neg'}" style="width:${signal.confidence}%"></div></div>
+        </div>
+      </div>
+      <div class="sig-levels">
+        <div class="level"><span>Entry zone</span><b class="entry-c">${L.entry.toFixed(p)}</b></div>
+        <div class="level"><span>Stop loss</span><b class="neg">${L.stop.toFixed(p)}</b></div>
+        <div class="level"><span>Target 1</span><b class="pos">${L.t1.toFixed(p)}</b></div>
+        <div class="level"><span>Target 2</span><b class="pos">${L.t2.toFixed(p)}</b></div>
+        <div class="level"><span>Risk : Reward</span><b>1 : ${L.rr.toFixed(2)}</b></div>
+      </div>
+      <div class="card-subtitle">Why</div>
+      <div class="sig-factors">${signal.factors.map((f) => `
+        <div class="factor">
+          <span class="factor-dot ${f.dir > 0 ? 'dot-pos' : f.dir < 0 ? 'dot-neg' : 'dot-wait'}"></span>
+          <div><div class="factor-name">${escapeText(f.name)} <span class="factor-w">w${f.weight}</span></div>
+          <div class="factor-note">${escapeText(f.note)}</div></div>
+        </div>`).join('')}</div>`;
+  }
+
+  // ---- market structure & liquidity ----
+  function renderMarketStructure() {
+    const el = $('#mstructure');
+    if (!el || !analysisResult || !analysisResult.mstructure) return;
+    const m = analysisResult.mstructure;
+    const p = symMeta().pricePrecision;
+    const badge = (txt, cls) => `<span class="ms-badge ${cls}">${txt}</span>`;
+    const extCls = m.external === 'bullish' ? 'bull' : m.external === 'bearish' ? 'bear' : 'neutral';
+    const intCls = m.internal === 'bullish' ? 'bull' : m.internal === 'bearish' ? 'bear' : 'neutral';
+    const zoneCls = m.zone === 'premium' ? 'bear' : m.zone === 'discount' ? 'bull' : 'neutral';
+    const events = m.recentEvents.map((e) => `
+      <div class="ms-event">
+        <span class="ms-scope">${e.scope} ${e.kind}</span>
+        <span class="${e.dir === 'up' ? 'pos' : 'neg'}">${e.dir === 'up' ? '▲' : '▼'}</span>
+        <span class="ms-at">@${e.level.toFixed(p)}</span>
+      </div>`).join('');
+    el.innerHTML = `
+      <div class="ms-badges">
+        ${badge('EXTERNAL ' + m.external.toUpperCase(), extCls)}
+        ${badge('INTERNAL ' + m.internal.toUpperCase(), intCls)}
+        ${badge(m.zone.toUpperCase(), zoneCls)}
+      </div>
+      <div class="of-grid tight">
+        <div class="of-cell"><span>Continuation</span><b class="${m.continuation >= 50 ? 'pos' : ''}">${m.continuation}%</b></div>
+        <div class="of-cell"><span>Reversal</span><b class="${m.reversal > 50 ? 'neg' : ''}">${m.reversal}%</b></div>
+      </div>
+      <div class="ms-range">
+        <div class="ms-range-head">
+          <span>${m.rangeLow.toFixed(p)}</span>
+          <span>EQ ${m.eq.toFixed(p)}</span>
+          <span>${m.rangeHigh.toFixed(p)}</span>
+        </div>
+        <div class="ms-bar"><span class="ms-dot" style="left:${(m.position * 100).toFixed(1)}%"></span></div>
+        <div class="ms-range-head"><span class="pos">DISCOUNT</span><span class="neg">PREMIUM</span></div>
+      </div>
+      <div class="ms-events">${events || '<span class="muted">no recent structure events</span>'}</div>
+      ${m.reasons.length ? `<div class="ms-note">${escapeText(m.reasons[0])}.</div>` : ''}`;
   }
 
   function renderOrderFlow() {
@@ -610,6 +799,7 @@
         funding: (state.stats[state.symbol] || {}).funding,
       });
       dash.applyAnalysis(a, signal);
+      dash.setMAs(a.mas);
       renderSignalEngine();
       renderTrendBadge();
       renderEngines();

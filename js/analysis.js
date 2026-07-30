@@ -436,6 +436,131 @@
     return { up, high, low, startTime: candles[startIdx].time, levels, golden };
   }
 
+  // ---------- Volume Spread Analysis (Wyckoff / Tom Williams rules) ----------
+  // Compares each bar's SPREAD (range), CLOSE POSITION within that range and
+  // VOLUME against recent averages to classify effort-vs-result anomalies.
+  function volumeSpreadAnalysis(candles) {
+    const out = [];
+    const start = Math.max(2, candles.length - 120);
+    for (let i = start; i < candles.length; i++) {
+      const c = candles[i];
+      const spread = c.high - c.low;
+      if (spread <= 0) continue;
+      const avgSpread = avgOf(candles, i - 1, 20, (x) => x.high - x.low);
+      const avgVol = avgOf(candles, i - 1, 20, (x) => x.volume);
+      if (!avgSpread || !avgVol) continue;
+
+      const spreadR = spread / avgSpread;   // wide (>1.4) vs narrow (<0.7)
+      const volR = c.volume / avgVol;       // high (>1.5) vs low (<0.7)
+      const closePos = (c.close - c.low) / spread; // 0 = at low, 1 = at high
+      const up = c.close > c.open;
+      const prev = candles[i - 1];
+      const trendUp = c.close > candles[Math.max(0, i - 5)].close;
+
+      const wide = spreadR > 1.4, narrow = spreadR < 0.7;
+      const highVol = volR > 1.5, lowVol = volR < 0.7, ultraVol = volR > 2.5;
+
+      const add = (type, bias, label, note) => out.push({
+        idx: i, time: c.time, type, bias, label, note,
+        spreadR, volR, closePos, volume: c.volume,
+      });
+
+      // --- classic VSA signatures, most specific first ---
+      if (wide && ultraVol && closePos > 0.7 && !trendUp) {
+        add('stopping-volume', 'bullish', 'STOP VOL',
+          `Huge volume (${volR.toFixed(1)}× avg) on a wide down-move but the bar closed near its high — sellers are being absorbed, a floor is being built.`);
+      } else if (wide && ultraVol && closePos < 0.3 && trendUp) {
+        add('buying-climax', 'bearish', 'CLIMAX',
+          `Climactic volume (${volR.toFixed(1)}× avg) into new highs closing near the low — demand is being met with heavy supply. Distribution.`);
+      } else if (wide && highVol && closePos < 0.35 && up) {
+        add('upthrust', 'bearish', 'UPTHRUST',
+          `Upthrust: price pushed up on ${volR.toFixed(1)}× volume then closed near the low — the move up was rejected, trapping buyers.`);
+      } else if (wide && highVol && closePos > 0.65 && !up && c.low < prev.low) {
+        add('spring', 'bullish', 'SPRING',
+          `Spring/shakeout: dipped under the prior low on ${volR.toFixed(1)}× volume and closed strong — weak holders shaken out.`);
+      } else if (narrow && highVol) {
+        add('absorption', closePos > 0.5 ? 'bullish' : 'bearish', 'ABSORB',
+          `Effort vs result mismatch: ${volR.toFixed(1)}× volume produced only a ${spreadR.toFixed(1)}× spread — someone large is absorbing the flow.`);
+      } else if (wide && lowVol) {
+        add('no-liquidity', up ? 'bearish' : 'bullish', 'THIN',
+          `Wide ${up ? 'up' : 'down'} bar on only ${volR.toFixed(1)}× volume — the move went through thin liquidity, not real participation. Easily reversed.`);
+      } else if (narrow && lowVol && up && trendUp) {
+        add('no-demand', 'bearish', 'NO DEMAND',
+          `No-demand bar: an up bar on ${volR.toFixed(1)}× volume with a narrow spread — buyers are not supporting this rally.`);
+      } else if (narrow && lowVol && !up && !trendUp) {
+        add('no-supply', 'bullish', 'NO SUPPLY',
+          `No-supply bar: a down bar on ${volR.toFixed(1)}× volume with a narrow spread — sellers have dried up.`);
+      } else if (ultraVol) {
+        add('unusual-volume', closePos > 0.5 ? 'bullish' : 'bearish', 'VOL SPIKE',
+          `Unusual volume: ${volR.toFixed(1)}× the 20-bar average, closing ${closePos > 0.5 ? 'in the upper' : 'in the lower'} half of the range.`);
+      }
+    }
+    return out.slice(-40);
+  }
+
+  function avgOf(candles, endIdx, len, fn) {
+    const from = Math.max(0, endIdx - len + 1);
+    let s = 0, n = 0;
+    for (let i = from; i <= endIdx; i++) { s += fn(candles[i]); n++; }
+    return n ? s / n : 0;
+  }
+
+  // ---------- key moving averages ----------
+  function movingAverages(candles) {
+    const close = candles.map((c) => c.close);
+    const price = close[close.length - 1];
+    const emaSeries = (len) => {
+      const k = 2 / (len + 1);
+      const out = [];
+      let e = close[0];
+      for (let i = 0; i < close.length; i++) { e = i ? close[i] * k + e * (1 - k) : close[0]; out.push(e); }
+      return out;
+    };
+    const smaSeries = (len) => close.map((_, i) => {
+      if (i < len - 1) return null;
+      let s = 0;
+      for (let j = i - len + 1; j <= i; j++) s += close[j];
+      return s / len;
+    });
+
+    const defs = [
+      { key: 'ema20', label: 'EMA 20', len: 20, kind: 'ema' },
+      { key: 'ema50', label: 'EMA 50', len: 50, kind: 'ema' },
+      { key: 'ema100', label: 'EMA 100', len: 100, kind: 'ema' },
+      { key: 'ema200', label: 'EMA 200', len: 200, kind: 'ema' },
+      { key: 'sma200', label: 'SMA 200', len: 200, kind: 'sma' },
+    ];
+    const lines = [];
+    for (const d of defs) {
+      if (candles.length < d.len) continue;
+      const series = d.kind === 'ema' ? emaSeries(d.len) : smaSeries(d.len);
+      const value = series[series.length - 1];
+      if (value == null) continue;
+      lines.push({
+        ...d,
+        value,
+        series: series.map((v, i) => (v == null ? null : { time: candles[i].time, value: v })).filter(Boolean),
+        distancePct: ((price - value) / value) * 100,
+        above: price > value,
+      });
+    }
+    // golden / death cross on the 50 vs 200
+    let cross = null;
+    const f = lines.find((l) => l.key === 'ema50'), s = lines.find((l) => l.key === 'ema200');
+    if (f && s && f.series.length > 3 && s.series.length > 3) {
+      const fPrev = f.series[f.series.length - 3].value, sPrev = s.series[s.series.length - 3].value;
+      if (fPrev <= sPrev && f.value > s.value) cross = { type: 'golden', note: 'EMA 50 just crossed above EMA 200 — a golden cross, a classic bullish regime shift.' };
+      else if (fPrev >= sPrev && f.value < s.value) cross = { type: 'death', note: 'EMA 50 just crossed below EMA 200 — a death cross, a classic bearish regime shift.' };
+    }
+    const aboveCount = lines.filter((l) => l.above).length;
+    const stacked = lines.length >= 4 && (aboveCount === lines.length || aboveCount === 0);
+    return {
+      lines, cross, aboveCount, total: lines.length, stacked,
+      regime: aboveCount === lines.length ? 'bullish' : aboveCount === 0 ? 'bearish' : 'mixed',
+      nearest: lines.slice().sort((a, b) => Math.abs(a.distancePct) - Math.abs(b.distancePct))[0] || null,
+    };
+  }
+
   // ---------- market structure & liquidity (external/internal, premium/discount) ----------
   // External structure = major swings (the dealing range). Internal = the
   // minor structure inside it. Premium/discount is measured against the
@@ -521,15 +646,17 @@
     const profile = volumeProfile(candles);
     const phase = marketPhase(candles, cvd);
     const mstructure = marketStructure(candles, pivots, structure, cvd);
+    const vsa = volumeSpreadAnalysis(candles);
+    const mas = movingAverages(candles);
     const lastATR = atr(candles, candles.length - 1);
     return {
       pivots, structure, orderBlocks, fvgs, liquidity, absorption, cvd,
-      divergence, fib, engulfing, doublePattern, profile, phase, mstructure, atr: lastATR,
+      divergence, fib, engulfing, doublePattern, profile, phase, mstructure, vsa, mas, atr: lastATR,
       lastVolSMA: volSMA(candles, candles.length - 1),
     };
   }
 
-  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, findEngulfing, srLevels, marketStructure, findDoublePattern, volumeProfile, marketPhase, atr };
+  const api = { analyze, findPivots, analyzeStructure, findOrderBlocks, findFVGs, findLiquidity, findAbsorption, computeCVD, findDeltaDivergence, computeFib, findEngulfing, srLevels, marketStructure, volumeSpreadAnalysis, movingAverages, findDoublePattern, volumeProfile, marketPhase, atr };
   if (typeof window !== 'undefined') window.Analysis = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

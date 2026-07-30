@@ -5,24 +5,33 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --surface: #000000;
-  --surface-2: #070709;
-  --surface-3: #101014;
-  --border: #1b1b20;
-  --ink: #e6e8ee;
-  --ink-muted: #8b93a7;
-  --up: #26a69a;
-  --down: #ef5350;
-  --long-liq: #d97706;
-  --short-liq: #3b82f6;
-  --accent: #3b82f6;
+  color-scheme: dark;
+  --surface: #05070d;
+  --surface-2: #090c15;
+  --surface-3: #111629;
+  --surface-4: #1a2138;
+  --border: rgba(255, 255, 255, 0.06);
+  --ink: #e5e9f0;
+  --ink-muted: #8792ab;
+  --up: #00e5a0;
+  --down: #ff4d6d;
+  --long-liq: #fbbf24;
+  --short-liq: #22d3ee;
+  --accent: #22d3ee;
+  --violet: #a78bfa;
+  --amber: #fbbf24;
 }
 
 html, body { height: 100%; }
 
 body {
-  background: var(--surface);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(34, 211, 238, 0.07), transparent 60%),
+    radial-gradient(900px 500px at 10% 110%, rgba(167, 139, 250, 0.06), transparent 60%),
+    var(--surface);
+  background-attachment: fixed;
   color: var(--ink);
+  font-feature-settings: "tnum";
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 14px;
   display: flex;
@@ -93,7 +102,7 @@ body {
   transition: border-color 0.15s, color 0.15s;
 }
 .tab:hover { border-color: var(--accent); }
-.tab.active { color: var(--ink); border-color: var(--accent); background: #1b2436; }
+.tab.active { color: var(--ink); border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.10); }
 .tab-base { font-weight: 700; font-size: 14px; }
 .tab-name { font-size: 10px; }
 
@@ -108,7 +117,7 @@ body {
   font-size: 12px;
 }
 .pill:hover { border-color: var(--accent); }
-.pill.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.pill.active { background: var(--accent); border-color: var(--accent); color: #05070d; font-weight: 700; }
 
 .top-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 
@@ -232,10 +241,13 @@ body {
 .ai-card { position: sticky; top: 0; }
 
 .card {
-  background: var(--surface-2);
+  background: linear-gradient(160deg, rgba(17, 22, 41, 0.72), rgba(9, 12, 21, 0.86));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
+  border-radius: 14px;
+  padding: 13px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 }
 .card-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-muted); margin-bottom: 10px; }
 .card-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); margin: 12px 0 6px; }
@@ -347,12 +359,20 @@ body {
 
 /* responsive */
 @media (max-width: 980px) {
-  .layout { grid-template-columns: 1fr; }
-  .chart-col { border-right: none; overflow-y: visible; }
+  /* Single column ordered chart -> AI panel -> engine cards. display:contents
+     lifts the chart column's children into the flex flow so the AI panel can
+     sit between them instead of being buried below every engine card. */
+  /* the desktop layout constrains height for independent scroll panes; on
+     mobile the page itself scrolls, so release those constraints or the
+     sidebar collapses to nothing */
+  .layout { display: flex; flex-direction: column; flex: none; min-height: auto; }
+  .chart-col { display: contents; }
+  .chart-wrap { order: 0; flex: none; }
+  .side { order: 1; flex: none; max-height: none; overflow: visible; padding: 10px 10px 0; }
+  .engine-grid { order: 2; }
   .chart { height: 52vh; min-height: 360px; }
-  .side { max-height: none; }
   .ai-card { position: static; }
-  .ai-card .knowledge { max-height: none; }
+  .ai-card .knowledge { max-height: 46vh; overflow-y: auto; }
 }
 
 /* mobile */
@@ -384,8 +404,20 @@ body {
   .stat { flex-shrink: 0; }
   .stat-layers { margin-left: 0; }
   .stat-layers label { min-height: 28px; }
-  .chart { height: 52vh; min-height: 320px; }
-  .engine-grid { grid-template-columns: 1fr; padding: 8px; }
+  .chart { height: 50vh; min-height: 300px; }
+  .engine-grid { grid-template-columns: 1fr; padding: 8px; gap: 8px; }
+  .card { padding: 11px; border-radius: 12px; }
+  .liq-tiles { gap: 6px; }
+  .liq-tile b { font-size: 17px; }
+  .gauges { gap: 6px; }
+  .gauge-svg { width: 50px; height: 50px; }
+  .gauge-val { left: 25px; font-size: 13px; }
+  .ohlc-legend { top: 20px; }
+  .countdown { top: 20px; right: 60px; font-size: 10px; padding: 2px 7px; }
+  .ai-card .knowledge { max-height: 52vh; }
+  .insight-detail { font-size: 11.5px; }
+  .of-grid { gap: 6px; }
+  .ms-badge { padding: 3px 8px; }
   .ohlc-legend { font-size: 10px; gap: 8px; padding: 2px 8px; flex-wrap: wrap; max-width: 70%; }
   .side { padding: 8px; }
   .sig-direction { font-size: 22px; min-width: 78px; }
@@ -573,3 +605,86 @@ body {
 
 /* AI panel sizing in the sidebar */
 .ai-card .knowledge { max-height: calc(100vh - 220px); overflow-y: auto; }
+
+
+/* ---------- AI intelligence: streaming analyst feed ---------- */
+.ai-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+.bias-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.bias-badge.bullish { color: var(--up); background: rgba(0, 229, 160, 0.12); border-color: rgba(0, 229, 160, 0.4); text-shadow: 0 0 12px rgba(0, 229, 160, 0.55); }
+.bias-badge.bearish { color: var(--down); background: rgba(255, 77, 109, 0.12); border-color: rgba(255, 77, 109, 0.4); text-shadow: 0 0 12px rgba(255, 77, 109, 0.55); }
+.bias-badge.neutral { color: var(--ink-muted); background: var(--surface-3); border-color: var(--border); }
+.ai-meta { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--ink-muted); }
+
+.prob-wrap { margin-bottom: 10px; }
+.prob-track {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--down);
+}
+.prob-fill { height: 100%; background: var(--up); transition: width 0.5s ease; }
+.prob-legend { display: flex; justify-content: space-between; font-size: 10px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+.insight-list { display: flex; flex-direction: column; gap: 7px; }
+.ai-empty { text-align: center; font-size: 12px; color: var(--ink-muted); padding: 18px 4px; }
+.insight {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
+  padding: 9px 10px;
+  animation: slideUp 0.35s ease-out;
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.insight-head { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 4px; }
+.sev { width: 6px; height: 6px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.sev-critical { background: var(--down); box-shadow: 0 0 8px rgba(255, 77, 109, 0.7); }
+.sev-warning { background: var(--amber); box-shadow: 0 0 8px rgba(251, 191, 36, 0.6); }
+.sev-info { background: var(--accent); box-shadow: 0 0 8px rgba(34, 211, 238, 0.6); }
+.insight-title { font-size: 12px; font-weight: 600; line-height: 1.35; flex: 1; }
+.insight-title.bullish { color: var(--up); }
+.insight-title.bearish { color: var(--down); }
+.insight-title.neutral { color: var(--ink); }
+.insight-time { font-family: ui-monospace, monospace; font-size: 9px; color: #5b6478; flex-shrink: 0; }
+.insight-detail { font-size: 11px; line-height: 1.55; color: var(--ink-muted); padding-left: 13px; }
+
+/* ---------- volume spread analysis ---------- */
+.vsa-list { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; max-height: 260px; overflow-y: auto; }
+.vsa-item { border-left: 2px solid var(--border); padding-left: 8px; }
+.vsa-item.bullish { border-left-color: var(--up); }
+.vsa-item.bearish { border-left-color: var(--down); }
+.vsa-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 3px; }
+.vsa-tag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.vsa-tag.bullish { color: var(--up); background: rgba(0, 229, 160, 0.12); }
+.vsa-tag.bearish { color: var(--down); background: rgba(255, 77, 109, 0.12); }
+.vsa-meta { font-size: 9.5px; color: #5b6478; font-variant-numeric: tabular-nums; }
+.vsa-note { font-size: 11px; line-height: 1.5; color: var(--ink-muted); }
+
+/* ---------- key MA levels ---------- */
+.ma-list { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
+.ma-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ma-swatch { width: 12px; height: 2.5px; border-radius: 2px; flex-shrink: 0; }
+.ma-name { color: var(--ink-muted); min-width: 56px; }
+.ma-val { font-variant-numeric: tabular-nums; margin-left: auto; }
+.ma-dist { font-size: 11px; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+
+/* scrollbars */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(34, 211, 238, 0.35); }

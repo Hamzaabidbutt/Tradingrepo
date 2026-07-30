@@ -276,109 +276,140 @@
   }
 
   // ================= AI INTELLIGENCE NARRATOR =================
-  // Composes a live, timeframe-aware market read from every engine.
-  function intelligence(ctx) {
+  // Streaming analyst feed (imported from the tradingmaster model): each
+  // insight carries a category, severity, bias, headline and the evidence
+  // behind it — never a bare BUY/SELL label.
+  function insights(ctx) {
     const { analysis, candles, tf, flow, liq, whales, session, symbol, signal, price, pricePrecision } = ctx;
-    if (!analysis || !candles || !candles.length) return [];
+    if (!analysis || !candles || !candles.length) return { list: [], bias: 'neutral', bullish: 50 };
     const px = (v) => (typeof v === 'number' ? v.toFixed(pricePrecision) : v);
     const S = window.Signals;
-    const out = [];
+    const list = [];
     const lastIdx = candles.length - 1;
+    const push = (category, severity, bias, headline, detail) =>
+      list.push({ category, severity, bias, headline, detail });
 
-    // --- headline read ---
+    // --- structure ---
     const trend = analysis.structure.trend;
-    const conf = signal ? signal.confidence : 0;
-    const bias = signal && signal.direction !== 'WAIT' ? signal.direction : 'NEUTRAL';
-    out.push({
-      k: 'Read',
-      v: `On the ${tf} timeframe ${symbol} is ${trend === 'up' ? 'trending up' : trend === 'down' ? 'trending down' : 'ranging'} with a ${bias} bias at ${conf}% confluence. Price ${px(price)}.`,
-      tone: bias === 'LONG' ? 'pos' : bias === 'SHORT' ? 'neg' : 'neutral',
-    });
+    const ms = analysis.mstructure;
+    push('structure', 'info', trend === 'up' ? 'bullish' : trend === 'down' ? 'bearish' : 'neutral',
+      trend === 'up' ? 'Market structure remains bullish' : trend === 'down' ? 'Market structure remains bearish' : 'Market structure is neutral',
+      `${symbol} on ${tf}: ${trend === 'range' ? 'price is ranging with no clean swing sequence' : `swings are making ${trend === 'up' ? 'higher highs and higher lows' : 'lower highs and lower lows'}`}. Price ${px(price)}, sitting in ${ms ? ms.zone : 'the range'}${ms ? ` of the ${px(ms.rangeLow)}–${px(ms.rangeHigh)} dealing range (EQ ${px(ms.eq)})` : ''}.`);
 
-    // --- order flow read ---
+    if (ms && ms.external !== ms.internal && ms.internal !== 'neutral' && ms.external !== 'neutral') {
+      push('structure', 'warning', ms.internal, 'Potential reversal forming',
+        `Internal structure shifted ${ms.internal} against the external ${ms.external} trend — an early reversal warning. Reversal probability ${ms.reversal}%.`);
+    }
+
+    const lastEv = analysis.structure.events[analysis.structure.events.length - 1];
+    if (lastEv && lastIdx - lastEv.idx <= 8) {
+      push('structure', lastEv.kind === 'CHoCH' ? 'critical' : 'info', lastEv.dir === 'up' ? 'bullish' : 'bearish',
+        lastEv.kind === 'CHoCH' ? `Change of character ${lastEv.dir}` : `Break of structure ${lastEv.dir}`,
+        `Price closed ${lastEv.dir === 'up' ? 'above' : 'below'} ${px(lastEv.level)} ${lastEv.idx === lastIdx ? 'on this bar' : `${lastIdx - lastEv.idx} bars ago`}. ${lastEv.kind === 'CHoCH' ? 'This is the first break against the prevailing trend — treat prior levels as suspect.' : 'Continuation confirmed; pullbacks into the origin block are the higher-probability entries.'}`);
+    }
+
+    // --- liquidity ---
+    const sweep = analysis.liquidity.sweeps[analysis.liquidity.sweeps.length - 1];
+    if (sweep && lastIdx - sweep.idx <= 10) {
+      push('liquidity', 'critical', sweep.dir === 'low' ? 'bullish' : 'bearish',
+        sweep.dir === 'low' ? 'Liquidity swept below the lows' : 'Liquidity swept above the highs',
+        `A wick ran ${sweep.dir === 'low' ? 'stops under' : 'stops above'} ${px(sweep.level)}${sweep.eq ? ' (equal ' + sweep.dir + 's)' : ''} and price closed back inside${sweep.volSpike ? ' on a volume spike' : ''}. That is engineered liquidity — the side that just got stopped out is now fuel for the opposite move.`);
+    }
+    const pool = analysis.liquidity.pools[0];
+    if (pool) {
+      push('liquidity', 'info', 'neutral', 'Resting liquidity is the next magnet',
+        `Untapped ${pool.eq ? 'equal ' + pool.type + 's' : 'swing ' + pool.type} at ${px(pool.price)} — price is drawn toward resting stop orders, so expect a reaction there.`);
+    }
+
+    // --- order flow ---
     if (flow) {
       const rv = flow.relVolume;
-      const volWord = rv > 1.5 ? 'well above average' : rv > 1.05 ? 'above average' : rv > 0.6 ? 'about average' : 'below average';
-      out.push({
-        k: 'Order flow',
-        v: `${flow.aggression} — buyers ${flow.buyPct}% vs sellers ${flow.sellPct}% on this bar, volume ${volWord} (${rv.toFixed(2)}×). Bar delta ${S.fmtUsd(flow.delta)} ${flow.delta >= 0 ? 'net buying' : 'net selling'}.`,
-        tone: flow.skew > 0.1 ? 'pos' : flow.skew < -0.1 ? 'neg' : 'neutral',
-      });
+      if (Math.abs(flow.skew) > 0.15) {
+        push('order_flow', 'info', flow.skew > 0 ? 'bullish' : 'bearish',
+          flow.skew > 0 ? 'Aggressive buy flow dominating' : 'Aggressive sell flow dominating',
+          `${flow.skew > 0 ? flow.buyPct : flow.sellPct}% of this bar's taker flow is ${flow.skew > 0 ? 'buying' : 'selling'} (${S.fmtUsd(Math.abs(flow.delta))} net). Cumulative delta is ${flow.cvd >= 0 ? 'positive' : 'negative'} at ${S.fmtUsd(flow.cvd)}.`);
+      }
+      if (rv > 1.5) {
+        push('order_flow', 'warning', 'neutral', 'Volume is running hot',
+          `Bar volume is pacing ${rv.toFixed(1)}× the 20-bar average. ${sweep && lastIdx - sweep.idx <= 4 ? 'The stop-hunt flush is the cause.' : liq && liq.cascade ? 'A liquidation cascade is driving it.' : lastEv && lastIdx - lastEv.idx <= 4 ? 'Breakout participation after the structure break.' : 'No structural cause visible — treat as news or a large player working an order.'}`);
+      } else if (rv < 0.6) {
+        push('order_flow', 'info', 'neutral', 'Participation is thin',
+          `Volume is only ${rv.toFixed(1)}× average. Moves on thin volume reverse easily — wait for volume to confirm any breakout.`);
+      }
     }
 
-    // --- why volume changed ---
-    const vAvg = analysis.lastVolSMA;
-    const recentV = candles.slice(-3).reduce((s, c) => s + c.volume, 0) / 3;
-    const ratio = vAvg ? recentV / vAvg : 1;
-    const sweep = analysis.liquidity.sweeps[analysis.liquidity.sweeps.length - 1];
-    const lastEv = analysis.structure.events[analysis.structure.events.length - 1];
-    let why;
-    if (ratio > 1.4) {
-      why = `Volume is pumping (${ratio.toFixed(1)}× average). `;
-      if (sweep && lastIdx - sweep.idx <= 5) why += `Cause: a stop-hunt ${sweep.dir === 'low' ? 'below' : 'above'} ${px(sweep.level)} forcing traders out.`;
-      else if (liq && liq.cascade) why += `Cause: a liquidation cascade — ${liq.cascadeSide}s being force-closed.`;
-      else if (lastEv && lastIdx - lastEv.idx <= 5) why += `Cause: breakout participation after the ${lastEv.kind}.`;
-      else why += 'No clear structural cause — likely news or a large player working an order.';
-    } else if (ratio < 0.7) {
-      why = `Volume is drying up (${ratio.toFixed(1)}× average) — moves are less reliable here; wait for volume to return before trusting a breakout.`;
-    } else {
-      why = `Volume is normal (${ratio.toFixed(1)}× average), no unusual participation.`;
+    // --- VSA ---
+    const vsa = (analysis.vsa || []).filter((v) => lastIdx - v.idx <= 6);
+    const lastVsa = vsa[vsa.length - 1];
+    if (lastVsa) {
+      push('vsa', lastVsa.type === 'stopping-volume' || lastVsa.type === 'buying-climax' ? 'critical' : 'warning',
+        lastVsa.bias, `VSA: ${lastVsa.label.toLowerCase()} detected`, lastVsa.note);
     }
-    out.push({ k: 'Volume', v: why, tone: ratio > 1.4 ? 'warn' : 'neutral' });
 
-    // --- accumulation / distribution ---
-    out.push({ k: 'Phase', v: `${cap(analysis.phase.phase)} — ${analysis.phase.note}.`, tone: /accum|markup|weak selloff/.test(analysis.phase.phase) ? 'pos' : /distrib|markdown|weak rally/.test(analysis.phase.phase) ? 'neg' : 'neutral' });
+    // --- moving averages ---
+    const mas = analysis.mas;
+    if (mas && mas.lines.length) {
+      if (mas.cross) push('trend', 'critical', mas.cross.type === 'golden' ? 'bullish' : 'bearish',
+        mas.cross.type === 'golden' ? 'Golden cross printed' : 'Death cross printed', mas.cross.note);
+      const n = mas.nearest;
+      if (n && Math.abs(n.distancePct) < 0.6) {
+        push('trend', 'warning', n.above ? 'bullish' : 'bearish', `Price is testing the ${n.label}`,
+          `${n.label} sits at ${px(n.value)}, only ${Math.abs(n.distancePct).toFixed(2)}% away. This is where trend traders defend — a clean reclaim or rejection here sets the next leg.`);
+      } else {
+        push('trend', 'info', mas.regime === 'bullish' ? 'bullish' : mas.regime === 'bearish' ? 'bearish' : 'neutral',
+          `Price is ${mas.aboveCount}/${mas.total} key MAs ${mas.aboveCount >= mas.total / 2 ? 'above' : 'below'}`,
+          `${mas.stacked ? 'MAs are fully stacked — a clean trending regime.' : 'MAs are tangled — a mixed, chop-prone regime.'} Nearest is the ${n ? n.label + ' at ' + px(n.value) : 'n/a'}.`);
+      }
+    }
 
     // --- liquidations ---
     if (liq && (liq.long + liq.short) > 0) {
-      const side = liq.minuteLong > liq.minuteShort ? 'longs' : 'shorts';
-      out.push({
-        k: 'Liquidations',
-        v: liq.cascade
-          ? `⚠ Cascade in progress — ${liq.cascadeSide}s getting wiped out (${S.fmtUsd(liq.minuteLong + liq.minuteShort)} in 60s). These flushes often mark short-term ${liq.cascadeSide === 'long' ? 'bottoms' : 'tops'}.`
-          : `${S.fmtUsd(liq.long)} longs vs ${S.fmtUsd(liq.short)} shorts liquidated since open, ~${S.fmtUsd(liq.perMin)}/min. Recent pressure on ${side}.`,
-        tone: liq.cascade ? 'warn' : 'neutral',
-      });
+      const side = liq.minuteLong > liq.minuteShort ? 'long' : 'short';
+      push('liquidation', liq.cascade ? 'critical' : 'warning', side === 'long' ? 'bullish' : 'bearish',
+        liq.cascade ? `Cascade: ${liq.cascadeSide}s being wiped out` : `${side === 'long' ? 'Long' : 'Short'} liquidations increasing`,
+        `${S.fmtUsd(liq.long)} of longs and ${S.fmtUsd(liq.short)} of shorts have been force-closed since you opened the page, running at ${S.fmtUsd(liq.perMin)}/min. Forced ${side === 'long' ? 'selling' : 'buying'} exhausts that side — these flushes frequently mark short-term ${side === 'long' ? 'lows' : 'highs'}.`);
     }
 
     // --- whales ---
     if (whales && whales.count) {
-      const b = whales.bias;
-      out.push({
-        k: 'Whales',
-        v: `${whales.count} large orders in 15m — ${S.fmtUsd(whales.buyNotional)} buying vs ${S.fmtUsd(whales.sellNotional)} selling. ${Math.abs(b) < 0.15 ? 'Big players are two-way, no clear side.' : b > 0 ? 'Big money is leaning long.' : 'Big money is leaning short.'}`,
-        tone: Math.abs(b) < 0.15 ? 'neutral' : b > 0 ? 'pos' : 'neg',
-      });
+      push('whales', 'warning', Math.abs(whales.bias) < 0.15 ? 'neutral' : whales.bias > 0 ? 'bullish' : 'bearish',
+        'Large orders are hitting the tape',
+        `${whales.count} prints above ${S.fmtUsd(whales.threshold)} in the last 15 minutes — ${S.fmtUsd(whales.buyNotional)} buying against ${S.fmtUsd(whales.sellNotional)} selling. ${Math.abs(whales.bias) < 0.15 ? 'Big players are two-way here, no clear side.' : whales.bias > 0 ? 'Size is leaning long.' : 'Size is leaning short.'}`);
     }
 
-    // --- key areas ---
-    if (analysis.profile) {
-      out.push({
-        k: 'Key areas',
-        v: `Heaviest buying near ${px(analysis.profile.buyArea)}, heaviest selling near ${px(analysis.profile.sellArea)}, most-traded price ${px(analysis.profile.poc)}. Expect reactions on revisit.`,
-        tone: 'neutral',
-      });
-    }
+    // --- phase & areas ---
+    push('phase', 'info', /accum|markup|weak selloff/.test(analysis.phase.phase) ? 'bullish' : /distrib|markdown|weak rally/.test(analysis.phase.phase) ? 'bearish' : 'neutral',
+      `${cap(analysis.phase.phase)} phase`, `${cap(analysis.phase.note)}.${analysis.profile ? ` Heaviest buying sits near ${px(analysis.profile.buyArea)}, heaviest selling near ${px(analysis.profile.sellArea)}, with the most-traded price at ${px(analysis.profile.poc)}.` : ''}`);
 
-    // --- session context ---
+    // --- session ---
     if (session) {
-      out.push({
-        k: 'Session',
-        v: `${session.label} — ${session.note}${session.next ? ` Next: ${session.next.name} opens in ${fmtMins(session.nextInMinutes)}.` : ''}`,
-        tone: session.overlap ? 'warn' : 'neutral',
-      });
+      push('session', session.overlap ? 'warning' : 'info', 'neutral',
+        session.active.length ? `${session.label} session is live` : 'Between sessions',
+        `${session.note}${session.next ? ` ${session.next.name} opens in ${fmtMins(session.nextInMinutes)}.` : ''}`);
     }
 
-    // --- what to watch ---
-    const watch = [];
-    if (analysis.doublePattern) watch.push(`${analysis.doublePattern.type === 'double-top' ? 'double top' : 'double bottom'} at ${px(analysis.doublePattern.level)} (~${analysis.doublePattern.breakChance}% break odds)`);
-    const ob = analysis.orderBlocks[analysis.orderBlocks.length - 1];
-    if (ob) watch.push(`${ob.dir === 'up' ? 'demand' : 'supply'} block ${px(ob.bottom)}–${px(ob.top)}`);
-    const pool = analysis.liquidity.pools[0];
-    if (pool) watch.push(`untapped liquidity at ${px(pool.price)}`);
-    if (watch.length) out.push({ k: 'Watching', v: `Key levels: ${watch.join(' · ')}.`, tone: 'neutral' });
+    // --- setup ---
+    if (signal) {
+      if (signal.direction === 'WAIT') {
+        push('setup', 'info', 'neutral', 'No high-probability setup yet',
+          `Composite confluence is ${signal.confidence}%, below the firing threshold. The engine is waiting for price to reach a zone of interest with agreeing flow rather than forcing a trade.`);
+      } else {
+        const L = signal.levels;
+        push('setup', 'critical', signal.direction === 'LONG' ? 'bullish' : 'bearish',
+          `${signal.direction} setup active at ${signal.confidence}% confluence`,
+          `Entry ${px(L.entry)}, stop ${px(L.stop)}, targets ${px(L.t1)} and ${px(L.t2)} (1:${L.rr.toFixed(2)} R). Driven by: ${signal.factors.filter((f) => f.dir !== 0).slice(0, 3).map((f) => f.name.toLowerCase()).join(', ')}.`);
+      }
+    }
 
-    return out;
+    // overall bias / probability
+    const score = list.reduce((s, i) => s + (i.bias === 'bullish' ? 1 : i.bias === 'bearish' ? -1 : 0) * (i.severity === 'critical' ? 3 : i.severity === 'warning' ? 2 : 1), 0);
+    const maxScore = list.reduce((s, i) => s + (i.severity === 'critical' ? 3 : i.severity === 'warning' ? 2 : 1), 0) || 1;
+    const bullish = Math.round(50 + (score / maxScore) * 50);
+    return {
+      list,
+      bias: bullish > 58 ? 'bullish' : bullish < 42 ? 'bearish' : 'neutral',
+      bullish: Math.max(2, Math.min(98, bullish)),
+    };
   }
 
   function recentMove(candles) {
@@ -395,7 +426,7 @@
     return h ? `${h}h ${mm}m` : `${mm}m`;
   }
 
-  const api = { OrderFlowEngine, LiquidationEngine, WhaleDetector, activeSessions, sessionInfo, intelligence };
+  const api = { OrderFlowEngine, LiquidationEngine, WhaleDetector, activeSessions, sessionInfo, insights };
   if (typeof window !== 'undefined') window.Engines = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

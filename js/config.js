@@ -1,6 +1,6 @@
 // Global configuration for the dashboard.
 window.CFG = {
-  VERSION: 8,
+  VERSION: 9,
   SYMBOLS: [
     { id: 'UNIUSDT', base: 'UNI', name: 'Uniswap', pricePrecision: 4, sample: 9.2 },
     { id: 'ORDIUSDT', base: 'ORDI', name: 'Ordinals', pricePrecision: 3, sample: 11.5 },
@@ -49,36 +49,44 @@ window.CFG = {
 
   // Validated dark-surface palette (see README)
   COLORS: {
-    up: '#26a69a',
-    down: '#ef5350',
-    upDim: 'rgba(38,166,154,0.45)',
-    downDim: 'rgba(239,83,80,0.45)',
-    longLiq: '#d97706',   // longs got liquidated
-    shortLiq: '#3b82f6',  // shorts got liquidated
-    cvd: '#d1d4dc',
-    obBull: 'rgba(38,166,154,0.16)',
-    obBullRespected: 'rgba(38,166,154,0.30)',
-    obBear: 'rgba(239,83,80,0.16)',
-    obBearRespected: 'rgba(239,83,80,0.30)',
-    fvgBull: 'rgba(59,130,246,0.12)',
-    fvgBear: 'rgba(217,119,6,0.12)',
-    liquidity: '#8b93a7',
-    fibLine: 'rgba(139,147,167,0.55)',
-    fibGold: 'rgba(217,119,6,0.10)',
-    fibLabel: '#a9b1c4',
-    srSupport: 'rgba(38,166,154,0.7)',
-    srResistance: 'rgba(239,83,80,0.7)',
-    entry: '#3b82f6',
-    stop: '#ef5350',
-    target: '#26a69a',
-    surface: '#000000',
-    grid: '#141414',
-    ink: '#e6e8ee',
-    inkMuted: '#8b93a7',
-    sessionAsia: 'rgba(59,130,246,0.05)',
-    sessionLondon: 'rgba(217,119,6,0.05)',
-    sessionNY: 'rgba(38,166,154,0.05)',
+    up: '#00e5a0',
+    down: '#ff4d6d',
+    upDim: 'rgba(0,229,160,0.40)',
+    downDim: 'rgba(255,77,109,0.40)',
+    longLiq: '#fbbf24',   // longs got liquidated
+    shortLiq: '#22d3ee',  // shorts got liquidated
+    cvd: '#e5e9f0',
+    obBull: 'rgba(0,229,160,0.14)',
+    obBullRespected: 'rgba(0,229,160,0.26)',
+    obBear: 'rgba(255,77,109,0.14)',
+    obBearRespected: 'rgba(255,77,109,0.26)',
+    fvgBull: 'rgba(34,211,238,0.11)',
+    fvgBear: 'rgba(251,191,36,0.11)',
+    liquidity: '#8792ab',
+    fibLine: 'rgba(167,139,250,0.55)',
+    fibGold: 'rgba(251,191,36,0.09)',
+    fibLabel: '#a78bfa',
+    srSupport: 'rgba(0,229,160,0.7)',
+    srResistance: 'rgba(255,77,109,0.7)',
+    entry: '#22d3ee',
+    stop: '#ff4d6d',
+    target: '#00e5a0',
+    surface: '#05070d',
+    grid: '#141a2b',
+    ink: '#e5e9f0',
+    inkMuted: '#8792ab',
+    violet: '#a78bfa',
+    amber: '#fbbf24',
+    cyan: '#22d3ee',
+    ma20: '#22d3ee',
+    ma50: '#a78bfa',
+    ma100: '#fbbf24',
+    ma200: '#e5e9f0',
+    sessionAsia: 'rgba(34,211,238,0.045)',
+    sessionLondon: 'rgba(251,191,36,0.045)',
+    sessionNY: 'rgba(0,229,160,0.045)',
   },
+
 
   // Trading sessions in UTC hours [start, end)
   SESSIONS: [

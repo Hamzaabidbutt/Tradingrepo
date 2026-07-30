@@ -6,7 +6,7 @@
   <title>FlowSight — UNI &amp; ORDI Smart-Money Dashboard</title>
   <meta name="description" content="Live smart-money analysis for UNIUSDT and ORDIUSDT: liquidity hunts, order blocks, FVGs, CHoCH/BOS, delta volume and liquidations with plain-language reasoning." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
-  <link rel="stylesheet" href="css/style.css?v=8" />
+  <link rel="stylesheet" href="css/style.css?v=9" />
 </head>
 <body>
   <div id="errBanner" class="err-banner hidden"></div>
@@ -46,6 +46,8 @@
       <label><input type="checkbox" data-layer="levels"> Entry/Exit</label>
       <label><input type="checkbox" data-layer="sessions" checked> Sessions</label>
       <label><input type="checkbox" data-layer="whales" checked> Whales</label>
+      <label><input type="checkbox" data-layer="mas" checked> MAs</label>
+      <label><input type="checkbox" data-layer="vsa" checked> VSA</label>
     </div>
   </div>
 
@@ -79,6 +81,16 @@
         </div>
 
         <div class="card">
+          <div class="card-title">Volume spread analysis</div>
+          <div id="vsa"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Key MA levels</div>
+          <div id="mas"></div>
+        </div>
+
+        <div class="card">
           <div class="card-title">🐋 Whale detector</div>
           <div id="whales"></div>
         </div>
@@ -108,14 +120,14 @@
     Data: Binance USDT-M Futures (public API). Liquidation history starts when you open the page.
   </footer>
 
-  <script src="js/vendor/lightweight-charts.standalone.production.js?v=8"></script>
-  <script src="js/config.js?v=8"></script>
-  <script src="js/engines.js?v=8"></script>
-  <script src="js/data.js?v=8"></script>
-  <script src="js/analysis.js?v=8"></script>
-  <script src="js/signals.js?v=8"></script>
-  <script src="js/reasoning.js?v=8"></script>
-  <script src="js/chart.js?v=8"></script>
-  <script src="js/app.js?v=8"></script>
+  <script src="js/vendor/lightweight-charts.standalone.production.js?v=9"></script>
+  <script src="js/config.js?v=9"></script>
+  <script src="js/engines.js?v=9"></script>
+  <script src="js/data.js?v=9"></script>
+  <script src="js/analysis.js?v=9"></script>
+  <script src="js/signals.js?v=9"></script>
+  <script src="js/reasoning.js?v=9"></script>
+  <script src="js/chart.js?v=9"></script>
+  <script src="js/app.js?v=9"></script>
 </body>
 </html>
